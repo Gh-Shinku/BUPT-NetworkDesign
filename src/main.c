@@ -10,7 +10,8 @@
 #include "dns.h"
 #include "thpool.h"
 
-#define THREAD_NUM 128
+#define THREAD_NUM 32
+// #define DEBUG_MODE
 
 static GHashTable *table_dns;
 static int relay_sock;
@@ -81,7 +82,7 @@ static void print_key_value(gpointer key, gpointer value, gpointer data)
 static void destroy_key_value(gpointer key, gpointer value, gpointer data)
 {
   g_free(key);
-  g_free(value);
+  g_array_free(value, TRUE);
 }
 
 static void read_record()
@@ -96,10 +97,19 @@ static void read_record()
     }
     gchar *key = g_strdup(buf_domain);
     gchar *value = g_strdup(buf_ip);
-    g_hash_table_insert(table_dns, (gpointer)key, (gpointer)value);
+    GArray *valueArr = g_hash_table_lookup(table_dns, key);
+    if (valueArr == NULL) {
+      valueArr = g_array_new(FALSE, FALSE, sizeof(char *));
+      g_array_append_val(valueArr, value);
+      g_hash_table_insert(table_dns, (gpointer)key, (gpointer)valueArr);
+    } else {
+      g_array_append_val(valueArr, value);
+    }
   }
   fclose(table_relay);
-  // printf("load dnsrelay.txt into memory successfully\n");
+#ifdef DEBUG_MODE
+  printf("load dnsrelay.txt into memory successfully\n");
+#endif
 }
 
 static void serve(void *args)
@@ -125,30 +135,43 @@ static void serve(void *args)
   struct HeaderDnsDatagram header;
   struct AnswerDnsDatagram answer;
   init_header(&header);
+  header.id = ntohs(((uint16_t *)buffer)[0]);
   init_answer(&answer);
 
-  struct RequestDnsDatagram req;
+  struct RequestDnsDatagram request;
+  struct ResponseDnsDatagram response;
+  response.answer = g_array_new(FALSE, FALSE, sizeof(struct AnswerDnsDatagram));
 
   char *buf_ptr = (char *)(buffer + 12);
-  parse_dns_query_name(buf_ptr, req.query.name);
-  // printf("parse_dns_query_name successfully: %s\n", req.query.name);
-  gpointer ip = g_hash_table_lookup(table_dns, req.query.name);
-  if (ip != NULL) {
-    header.flags.QR = QR_RESPONSE;
-    header.ANCOUNT++;
+  parse_dns_query_name(buf_ptr, request.query.name);
+#ifdef DEBUG_MODE
+  printf("parse_dns_query_name successfully: %s\n", request.query.name);
+#endif
+  GArray *ipArr = g_hash_table_lookup(table_dns, request.query.name);
 
-    if (!strcmp(ip, BLACK_IP)) {
-      header.flags.RCODE = FLAGS_BAN;
-      inet_pton(AF_INET, BLACK_IP, &answer.address);
-    } else {
-      inet_pton(AF_INET, ip, &answer.address);
+  if (ipArr != NULL) {
+    header.flags.QR = QR_RESPONSE;
+
+    for (int i = 0; i < ipArr->len; i++) {
+      header.ANCOUNT++;
+      char *ip = g_array_index(ipArr, char *, i);
+      if (!strcmp(ip, BLACK_IP)) {
+        header.flags.RCODE = FLAGS_BAN;
+        inet_pton(AF_INET, BLACK_IP, &answer.address);
+        break;
+      } else {
+        inet_pton(AF_INET, ip, &answer.address);
+        g_array_append_val(response.answer, answer);
+      }
     }
 
     // printHeader(&header);
     put_header(&header, buffer);
-    put_answer(&answer, buffer + recv_len);
-    // printf("put_answer successfully\n");
-    back_len = recv_len + sizeof(struct AnswerDnsDatagram);
+    put_answers(response.answer, buffer + recv_len);
+#ifdef DEBUG_MODE
+    printf("put_answer successfully\n");
+#endif
+    back_len = recv_len + sizeof(struct AnswerDnsDatagram) * header.ANCOUNT;
   } else {
     send_len =
         sendto(pass_sock, buffer, recv_len, 0, (struct sockaddr *)&pass_addr, sizeof(pass_addr));
@@ -156,26 +179,47 @@ static void serve(void *args)
       perror("sendto pass_sock failed");
       return;
     }
-    // printf("send to pass_sock successfully\n");
+#ifdef DEBUG_MODE
+    printf("send to pass_sock successfully\n");
+#endif
     recv_len = recvfrom(pass_sock, buffer, BUFFER_SIZE, 0, NULL, NULL);
     if (recv_len < 0) {
       perror("recvfrom pass_sock failed");
       return;
     }
-    // printf("receive buffer from pass_sock successfully\n");
+    // cache into table_dns
+    parse_dns_response(&response, buffer);
+    GArray *answers = g_array_new(FALSE, FALSE, sizeof(char *));
+    char ipstr[128];
+    for (int i = 0; i < response.answer->len; i++) {
+      struct AnswerDnsDatagram *ans = &g_array_index(response.answer, struct AnswerDnsDatagram, i);
+      inet_ntop(AF_INET, (char *)&ans->address, ipstr, INET_ADDRSTRLEN);
+      char *val = g_strdup(ipstr);
+      g_array_append_val(answers, val);
+    }
+    g_hash_table_insert(table_dns, g_strdup(response.query.name), answers);
+
+#ifdef DEBUG_MODE
+    printf("receive buffer from pass_sock successfully\n");
+#endif
     back_len = recv_len;
   }
 
-  // printf("before send info back to relay_sock\n");
+#ifdef DEBUG_MODE
+  printf("before send info back to relay_sock\n");
+#endif
   send_len =
       sendto(relay_sock, buffer, back_len, 0, (struct sockaddr *)client_addr, sizeof(*client_addr));
   if (send_len < 0) {
     perror("sendto relay_sock failed");
     return;
   }
-  // printf("send to relay_sock successfully\n");
+#ifdef DEBUG_MODE
+  printf("send to relay_sock successfully\n");
+#endif
 
   free(taskargs->buffer);
   free(taskargs);
+  g_array_free(response.answer, TRUE);
   close(pass_sock);
 }

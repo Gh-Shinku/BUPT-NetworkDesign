@@ -28,29 +28,36 @@ void parse_dns_flags(struct DnsFlags *flags, uint16_t uflags)
   flags->RCODE = (uflags)&0xf;
 }
 
-void parse_dns_response(struct ResponseDnsDatagram *response, uint8_t *buffer)
+void parse_dns_header(struct HeaderDnsDatagram *header, uint8_t *buffer)
 {
   int offset = 0;
-  memcpy(&response->header.id, buffer + offset, sizeof(uint16_t));
-  response->header.id = ntohs(response->header.id);
+  memcpy(&header->id, buffer + offset, sizeof(uint16_t));
+  header->id = ntohs(header->id);
   uint16_t flags;
   offset += 2;
   memcpy(&flags, buffer + offset, sizeof(uint16_t));
   flags = ntohs(flags);
-  parse_dns_flags(&response->header.flags, flags);
+  parse_dns_flags(&header->flags, flags);
   offset += 2;
-  memcpy(&response->header.QDCOUNT, buffer + offset, sizeof(uint16_t));
-  response->header.QDCOUNT = ntohs(response->header.QDCOUNT);
+  memcpy(&header->QDCOUNT, buffer + offset, sizeof(uint16_t));
+  header->QDCOUNT = ntohs(header->QDCOUNT);
   offset += 2;
-  memcpy(&response->header.ANCOUNT, buffer + offset, sizeof(uint16_t));
-  response->header.ANCOUNT = ntohs(response->header.ANCOUNT);
+  memcpy(&header->ANCOUNT, buffer + offset, sizeof(uint16_t));
+  header->ANCOUNT = ntohs(header->ANCOUNT);
   offset += 2;
-  memcpy(&response->header.NSCOUNT, buffer + offset, sizeof(uint16_t));
-  response->header.NSCOUNT = ntohs(response->header.NSCOUNT);
+  memcpy(&header->NSCOUNT, buffer + offset, sizeof(uint16_t));
+  header->NSCOUNT = ntohs(header->NSCOUNT);
   offset += 2;
-  memcpy(&response->header.ARCOUNT, buffer + offset, sizeof(uint16_t));
-  response->header.ARCOUNT = ntohs(response->header.ARCOUNT);
+  memcpy(&header->ARCOUNT, buffer + offset, sizeof(uint16_t));
+  header->ARCOUNT = ntohs(header->ARCOUNT);
   offset += 2;
+}
+
+void parse_dns_response(struct ResponseDnsDatagram *response, uint8_t *buffer)
+{
+  int offset = 0;
+  parse_dns_header(&response->header, buffer);
+  offset += 12;
   parse_dns_query_name((char *)(buffer + offset), response->query.name);
   offset += strlen((char *)(buffer + offset)) + 1;
   memcpy(&response->query.type, buffer + offset, sizeof(uint16_t));
@@ -180,21 +187,25 @@ int put_request(struct RequestDnsDatagram *request, uint8_t *buffer)
   return offset;
 }
 
-void put_answer(struct AnswerDnsDatagram *ans, uint8_t *buffer)
+void put_answers(GArray *answers, uint8_t *buffer)
 {
   int offset = 0;
-  w_bytes16(buffer + offset, ans->name);
-  offset += 2;
-  w_bytes16(buffer + offset, ans->type);
-  offset += 2;
-  w_bytes16(buffer + offset, ans->class);
-  offset += 2;
-  w_bytes32(buffer + offset, ans->ttl);
-  offset += 4;
-  w_bytes16(buffer + offset, ans->data_len);
-  offset += 2;
-  w_bytes32(buffer + offset, ans->address);
-  offset += 4;
+  for (int i = 0; i < answers->len; i++) {
+    struct AnswerDnsDatagram *ans = &g_array_index(answers, struct AnswerDnsDatagram, i);
+    w_bytes16(buffer + offset, ans->name);
+    offset += 2;
+    w_bytes16(buffer + offset, ans->type);
+    offset += 2;
+    w_bytes16(buffer + offset, ans->class);
+    offset += 2;
+    w_bytes32(buffer + offset, ans->ttl);
+    offset += 4;
+    w_bytes16(buffer + offset, ans->data_len);
+    offset += 2;
+    memcpy(buffer + offset, &ans->address, sizeof(uint32_t));  // inet_pton时转换过了
+    // w_bytes32(buffer + offset, ans->address);
+    offset += 4;
+  }
 }
 
 void printflags(struct DnsFlags *flags)

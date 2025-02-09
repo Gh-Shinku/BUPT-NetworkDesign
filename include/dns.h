@@ -83,6 +83,7 @@ struct ResponseDnsDatagram
 /* parse */
 void parse_dns_query_name(char *qname, char *domain);
 void parse_dns_flags(struct DnsFlags *flags, uint16_t uflags);
+void parse_dns_header(struct HeaderDnsDatagram *header, uint8_t *buffer);
 void parse_dns_response(struct ResponseDnsDatagram *response, uint8_t *buffer);
 
 /* init */
@@ -96,7 +97,7 @@ void init_answer(struct AnswerDnsDatagram *answer);
 // void put_flags(struct DnsFlags *flags, uint8_t *buffer);
 int put_header(struct HeaderDnsDatagram *header, uint8_t *buffer);
 int put_request(struct RequestDnsDatagram *request, uint8_t *buffer);
-void put_answer(struct AnswerDnsDatagram *ans, uint8_t *buffer);
+void put_answers(GArray *answers, uint8_t *buffer);
 
 /* log */
 void printflags(struct DnsFlags *flags);

@@ -25,6 +25,14 @@ DNS response 的报文格式，相较于 request 仅仅添加了 Answers 段。
 * `RDLENGTH` RDATA段的长度
 * `RDATA` response的内容，取决于TYPE，在本项目中是4个字节的IPv4地址
 
+## dns_table
+dns_table 是一个`g_hash_table`，key 是`char *`，value 是`GArray *`
+value 是存储`char *`的动态数组
+目前来看，response中的answer(`struct AnswerDnsDatagram`类型)中的`address`成员是`uint32_t`，因此，在插入dns_table之前，需要做一次转换
+
+## 新要求：不能引入第三方库
+我们需要重新实现线程池和哈希表，还需要加入对IPv6的支持，TTL延时的处理，缓存算法的策略
+
 ## 压力测试
 使用 dnsperf 进行压测：
 ```
@@ -42,4 +50,19 @@ Statistics:
 
   Average Latency (s):  0.293018 (min 0.010373, max 4.980287)
   Latency StdDev (s):   0.626154
-```
+
+
+Statistics:
+
+  Queries sent:         2997056
+  Queries completed:    2997051 (100.00%)
+  Queries lost:         5 (0.00%)
+
+  Response codes:       NOERROR 2457621 (82.00%), SERVFAIL 30 (0.00%), NXDOMAIN 3 (0.00%), REFUSED 539397 (18.00%)
+  Average packet size:  request 33, response 59
+  Run time (s):         60.002875
+  Queries per second:   49948.456636
+
+  Average Latency (s):  0.001973 (min 0.000032, max 4.105776)
+  Latency StdDev (s):   0.015811
+  ```
