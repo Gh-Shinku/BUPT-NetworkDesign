@@ -25,12 +25,15 @@
 * `CLASS` 本项目设置成 0x0001，表示网络地址
 * `TTL` 时延
 * `RDLENGTH` RDATA段的长度
-* `RDATA` response的内容，取决于TYPE，在本项目中是4个字节的IPv4地址
+* `RDATA` response的内容，取决于TYPE，在本项目中是4个字节的 IPv4 地址
 
 ## dns_table
 dns_table 是一个`g_hash_table`，key 是`char *`，value 是`GArray *`
+
 value 是存储`char *`的动态数组
-目前来看，response中的answer(`struct AnswerDnsDatagram`类型)中的`address`成员是`uint32_t`，因此，在插入dns_table之前，需要做一次转换
+
+目前来看，response中的answer(`struct AnswerDnsDatagram`类型)中的
+`address`成员是`uint32_t`，因此，在插入dns_table之前，需要做一次转换
 
 ## 要求：不能引入第三方库
 需要重新实现线程池和哈希表，还需要加入对IPv6的支持，TTL延时的处理，LRU 缓存策略
@@ -38,22 +41,7 @@ value 是存储`char *`的动态数组
 ## 压力测试
 使用 dnsperf 进行压测：
 ```
-Statistics:
-
-  Queries sent:         9921
-  Queries completed:    8812 (88.82%)
-  Queries lost:         1009 (10.17%)
-  Queries interrupted:  100 (1.01%)
-
-  Response codes:       NOERROR 8341 (94.66%), SERVFAIL 288 (3.27%), NXDOMAIN 183 (2.08%)
-  Average packet size:  request 27, response 65
-  Run time (s):         78.800913
-  Queries per second:   111.826116
-
-  Average Latency (s):  0.293018 (min 0.010373, max 4.980287)
-  Latency StdDev (s):   0.626154
-
-
+[Version 1 use glib and third thread pool]
 Statistics:
 
   Queries sent:         2997056
@@ -67,4 +55,29 @@ Statistics:
 
   Average Latency (s):  0.001973 (min 0.000032, max 4.105776)
   Latency StdDev (s):   0.015811
-  ```
+
+[Version 2 self implemente totally]
+dnsperf -s localhost -d testdata.txt -l 60 -p 4090
+DNS Performance Testing Tool
+Version 2.9.0
+
+[Status] Command line: dnsperf -s localhost -d testdata.txt -l 60 -p 4090
+[Status] Sending queries (to 127.0.0.1:4090)
+[Status] Started at: Fri May  2 19:05:04 2025
+[Status] Stopping after 60.000000 seconds
+[Status] Testing complete (time limit)
+
+Statistics:
+
+  Queries sent:         1935031
+  Queries completed:    1935031 (100.00%)
+  Queries lost:         0 (0.00%)
+
+  Response codes:       NOERROR 1935031 (100.00%)
+  Average packet size:  request 33, response 38
+  Run time (s):         60.002351
+  Queries per second:   32249.253033
+
+  Average Latency (s):  0.003074 (min 0.000233, max 2.112497)
+  Latency StdDev (s):   0.021553
+```
