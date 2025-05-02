@@ -6,10 +6,11 @@
 #include "array.h"
 
 #define BUFFER_SIZE 1024
+#define DNS_BUFFER_SIZE 1024
 #define EX_DNS_ADDR "8.8.8.8"
 #define LOCAL_ADDR "127.0.0.1"
 #define BLACK_IP "0.0.0.0"
-#define DEFAULT_TTL 360
+#define DEFAULT_TTL 300
 #define FLAGS_BAN 5
 
 enum QR_TYPE { QR_QUERY, QR_RESPONSE };
@@ -111,7 +112,6 @@ void init_request(struct RequestDnsDatagram *request);
 void init_answer(struct AnswerDnsDatagram *answer);
 
 /* put */
-// void put_flags(struct DnsFlags *flags, uint8_t *buffer);
 int put_header(struct HeaderDnsDatagram *header, uint8_t *buffer);
 int put_request(struct RequestDnsDatagram *request, uint8_t *buffer);
 void put_answers(array_t *answers, uint8_t *buffer);

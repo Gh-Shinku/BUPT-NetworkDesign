@@ -1,6 +1,7 @@
 #include "dns.h"
 
 #include <arpa/inet.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,39 +58,73 @@ void parse_dns_header(struct HeaderDnsDatagram *header, uint8_t *buffer) {
 }
 
 void parse_dns_response(struct ResponseDnsDatagram *response, uint8_t *buffer) {
+  if (response == NULL || buffer == NULL) return;
+
   int offset = 0;
   parse_dns_header(&response->header, buffer);
   offset += 12;
+
+  if (buffer[offset] == '\0') return;
+
   parse_dns_query_name(response->query.name, (char *)(buffer + offset));
   offset += strlen((char *)(buffer + offset)) + 1;
+
+  if (offset + 4 > DNS_BUFFER_SIZE) return;
+
   memcpy(&response->query.type, buffer + offset, sizeof(uint16_t));
   response->query.type = ntohs(response->query.type);
   offset += 2;
+
   memcpy(&response->query.class, buffer + offset, sizeof(uint16_t));
   response->query.class = ntohs(response->query.class);
   offset += 2;
-  // response->answer = g_array_new(FALSE, FALSE, sizeof(struct AnswerDnsDatagram));
-  response->answer = array_init(sizeof(struct AnswerDnsDatagram));
+
+  if (response->answer == NULL) {
+    response->answer = array_init(sizeof(struct AnswerDnsDatagram));
+    if (response->answer == NULL) return;
+  }
+
   struct AnswerDnsDatagram answer;
-  while (*(buffer + offset)) {
-    memcpy(&answer.name, buffer + offset, sizeof(uint16_t));  // 假定name是指针类型
+
+  while (offset < DNS_BUFFER_SIZE && *(buffer + offset)) {
+    if (offset + 12 > DNS_BUFFER_SIZE) break;
+
+    memcpy(&answer.name, buffer + offset, sizeof(uint16_t));
     offset += 2;
+
     memcpy(&answer.type, buffer + offset, sizeof(uint16_t));
     answer.type = ntohs(answer.type);
     offset += 2;
+
     memcpy(&answer.class, buffer + offset, sizeof(uint16_t));
     answer.class = ntohs(answer.class);
     offset += 2;
+
     memcpy(&answer.ttl, buffer + offset, sizeof(uint32_t));
     answer.ttl = ntohl(answer.ttl);
     offset += 4;
-    memcpy(&answer.data_len, buffer + offset, sizeof(uint16_t));
-    answer.data_len = ntohl(answer.data_len);
+
+    uint16_t data_len;
+    memcpy(&data_len, buffer + offset, sizeof(uint16_t));
+    data_len = ntohs(data_len);
+    answer.data_len = data_len;
     offset += 2;
-    memcpy(&answer.address, buffer + offset, sizeof(uint32_t));
-    answer.address = ntohl(answer.address);
-    offset += 4;
-    array_append(response->answer, &answer);
+
+    if (data_len > DNS_BUFFER_SIZE || offset + data_len > DNS_BUFFER_SIZE) {
+      break;
+    }
+
+    if (answer.type == 1 && data_len == 4) {
+      memcpy(&answer.address, buffer + offset, sizeof(uint32_t));
+    } else {
+      answer.address = 0;
+    }
+
+    offset += data_len;
+
+    if (answer.type == 1) {
+      array_append(response->answer, &answer);
+    }
   }
 }
 
@@ -138,23 +173,36 @@ static void put_flags(struct DnsFlags *flags, uint8_t *buffer) {
 }
 
 int put_header(struct HeaderDnsDatagram *header, uint8_t *buffer) {
+  if (header == NULL || buffer == NULL) return 0;
+
   int offset = 0;
   w_bytes16(buffer + offset, header->id);
   offset += 2;
+
+  buffer[offset] = 0;
+  buffer[offset + 1] = 0;
+
   put_flags(&header->flags, buffer + offset);
   offset += 2;
+
   w_bytes16(buffer + offset, header->QDCOUNT);
   offset += 2;
+
   w_bytes16(buffer + offset, header->ANCOUNT);
   offset += 2;
+
   w_bytes16(buffer + offset, header->NSCOUNT);
   offset += 2;
+
   w_bytes16(buffer + offset, header->ARCOUNT);
   offset += 2;
+
   return offset;
 }
 
 int put_request(struct RequestDnsDatagram *request, uint8_t *buffer) {
+  if (request == NULL || buffer == NULL) return 0;
+
   int offset = 0;
   offset += put_header(&request->header, buffer + offset);
 
@@ -175,6 +223,7 @@ int put_request(struct RequestDnsDatagram *request, uint8_t *buffer) {
 
   w_bytes16(buffer + offset, request->query.type);
   offset += 2;
+
   w_bytes16(buffer + offset, request->query.class);
   offset += 2;
 
@@ -182,21 +231,29 @@ int put_request(struct RequestDnsDatagram *request, uint8_t *buffer) {
 }
 
 void put_answers(array_t *answers, uint8_t *buffer) {
+  if (answers == NULL || buffer == NULL) return;
+
   int offset = 0;
   for (int i = 0; i < answers->length; i++) {
     struct AnswerDnsDatagram *ans = &array_index(answers, i, struct AnswerDnsDatagram);
+    if (ans == NULL) continue;
+
     w_bytes16(buffer + offset, ans->name);
     offset += 2;
+
     w_bytes16(buffer + offset, ans->type);
     offset += 2;
+
     w_bytes16(buffer + offset, ans->class);
     offset += 2;
+
     w_bytes32(buffer + offset, ans->ttl);
     offset += 4;
+
     w_bytes16(buffer + offset, ans->data_len);
     offset += 2;
-    memcpy(buffer + offset, &ans->address, sizeof(uint32_t));  // inet_pton时转换过了
-    // w_bytes32(buffer + offset, ans->address);
+
+    memcpy(buffer + offset, &ans->address, sizeof(uint32_t));
     offset += 4;
   }
 }
@@ -226,11 +283,15 @@ void print_header(struct HeaderDnsDatagram *header) {
 }
 
 uint16_t generate_random_id() {
-  srand(time(NULL));
-  return (uint16_t)rand();
+  static __thread unsigned int seed = 0;
+  if (seed == 0) {
+    seed = (unsigned int)time(NULL) ^ (unsigned int)pthread_self();
+  }
+  return (uint16_t)rand_r(&seed);
 }
 
 void w_bytes32(uint8_t *b, uint32_t v) {
+  if (b == NULL) return;
   b[0] = (v >> 24) & 0xff;
   b[1] = (v >> 16) & 0xff;
   b[2] = (v >> 8) & 0xff;
@@ -238,6 +299,7 @@ void w_bytes32(uint8_t *b, uint32_t v) {
 }
 
 void w_bytes16(uint8_t *b, uint16_t v) {
+  if (b == NULL) return;
   b[0] = (v >> 8) & 0xff;
   b[1] = (v)&0xff;
 }
