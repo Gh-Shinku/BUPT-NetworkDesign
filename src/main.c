@@ -26,7 +26,7 @@ static pthread_mutex_t mutex_dc;
 static pthread_mutex_t mutex_relay_sock;
 
 static void read_record();
-static void serve(void *args);
+static void *serve(void *args);
 
 struct TaskArgs {
   uint8_t *buffer;
@@ -105,7 +105,7 @@ int main() {
     args->sockaddr = client_addr;
     args->recv_len = recv_len;
 
-    thpool_add_work(thpool, serve, args);
+    thpool_add_job(thpool, serve, args);
   }
   close(relay_sock);
   pthread_mutex_destroy(&mutex_ldt);
@@ -142,7 +142,7 @@ static void read_record() {
 #endif
 }
 
-static void serve(void *args) {
+static void *serve(void *args) {
   struct TaskArgs *taskargs = (struct TaskArgs *)args;
   uint8_t *buffer = taskargs->buffer;
   struct sockaddr_in *client_addr = &taskargs->sockaddr;
@@ -402,4 +402,5 @@ cleanup:
 
   free(taskargs->buffer);
   free(taskargs);
+  return NULL;
 }

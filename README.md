@@ -56,7 +56,7 @@ Statistics:
   Average Latency (s):  0.001973 (min 0.000032, max 4.105776)
   Latency StdDev (s):   0.015811
 
-[Version 2 self implemente totally]
+[Version 2 self implemente except thread pool]
 dnsperf -s localhost -d testdata.txt -l 60 -p 4090
 DNS Performance Testing Tool
 Version 2.9.0
@@ -80,4 +80,28 @@ Statistics:
 
   Average Latency (s):  0.003074 (min 0.000233, max 2.112497)
   Latency StdDev (s):   0.021553
+
+[Version 3 self implemented totally]
+DNS Performance Testing Tool
+Version 2.9.0
+
+[Status] Command line: dnsperf -s localhost -d testdata.txt -l 60 -p 4090
+[Status] Sending queries (to 127.0.0.1:4090)
+[Status] Started at: Sun May  4 22:33:08 2025
+[Status] Stopping after 60.000000 seconds
+[Status] Testing complete (time limit)
+
+Statistics:
+
+  Queries sent:         3707137
+  Queries completed:    3707137 (100.00%)
+  Queries lost:         0 (0.00%)
+
+  Response codes:       NOERROR 3707137 (100.00%)
+  Average packet size:  request 33, response 35
+  Run time (s):         60.001023
+  Queries per second:   61784.563240
+
+  Average Latency (s):  0.001585 (min 0.000174, max 2.880180)
+  Latency StdDev (s):   0.014155
 ```
