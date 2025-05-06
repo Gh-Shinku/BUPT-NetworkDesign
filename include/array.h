@@ -39,6 +39,14 @@ void array_append(array_t *array, void *value);
  */
 void *_array_index(array_t *array, uint32_t index);
 
+/**
+ * @brief 实际仍然调用 _array_index，追加了对空指针的判断，更为安全
+ *
+ * @param array
+ * @param index
+ *
+ * @return void*
+ */
 void *safe_array_index(array_t *array, uint32_t index);
 
 /* 返回动态数组指定索引处元素 */

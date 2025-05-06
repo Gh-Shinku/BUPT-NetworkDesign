@@ -24,9 +24,15 @@ static struct sockaddr_in relay_addr;
 static pthread_mutex_t mutex_ldt;
 static pthread_mutex_t mutex_dc;
 static pthread_mutex_t mutex_relay_sock;
+static threadpool thpool;
 
 static void read_record();
 static void *serve(void *args);
+static void init_resource_limits();
+static int init_data_structures();
+static int init_socket();
+static void handle_requests();
+static void cleanup_resources();
 
 struct TaskArgs {
   uint8_t *buffer;
@@ -35,70 +41,100 @@ struct TaskArgs {
 };
 
 int main() {
-  // Increase file descriptor limits
+  init_resource_limits();
+
+  if (init_data_structures() != 0) {
+    return 1;
+  }
+
+  if (init_socket() != 0) {
+    cleanup_resources();
+    return 1;
+  }
+
+  handle_requests();
+  cleanup_resources();
+  return 0;
+}
+
+static void init_resource_limits() {
   struct rlimit rl;
-  rl.rlim_cur = 4096;  // Soft limit
-  rl.rlim_max = 8192;  // Hard limit
+  rl.rlim_cur = 128;
+  rl.rlim_max = 256;
   if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
     perror("Failed to increase file descriptor limit");
   }
+}
 
+static int init_data_structures() {
   local_dns_table = ht_init(NULL, ht_str_comp, 1024, STRING);
   dns_cache = cache_init();
+
   if (pthread_mutex_init(&mutex_ldt, NULL) < 0) {
+    perror("Failed to initialize local DNS table mutex");
     return 1;
   }
+
   if (pthread_mutex_init(&mutex_dc, NULL) < 0) {
+    perror("Failed to initialize DNS cache mutex");
+    pthread_mutex_destroy(&mutex_ldt);
     return 1;
   }
+
   if (pthread_mutex_init(&mutex_relay_sock, NULL) < 0) {
+    perror("Failed to initialize relay socket mutex");
+    pthread_mutex_destroy(&mutex_ldt);
+    pthread_mutex_destroy(&mutex_dc);
     return 1;
   }
+
   read_record();
 
-  threadpool thpool = thpool_init(THREAD_NUM);
+  thpool = thpool_init(THREAD_NUM);
 
+  return 0;
+}
+
+static int init_socket() {
   relay_sock = socket(AF_INET, SOCK_DGRAM, 0);
+  if (relay_sock < 0) {
+    perror("Failed to create relay socket");
+    return 1;
+  }
+
   relay_addr.sin_family = AF_INET;
   relay_addr.sin_addr.s_addr = INADDR_ANY;
   relay_addr.sin_port = htons(RELAY_PORT);
 
-  struct timeval tv;
-  tv.tv_sec = 1;
-  tv.tv_usec = 0;
-  if (setsockopt(relay_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-    perror("Error setting socket timeout");
-  }
-
-  int rcvbufsize = 8 * 1024 * 1024;  // 8MB receive buffer
-  int sndbufsize = 8 * 1024 * 1024;  // 8MB send buffer
-  if (setsockopt(relay_sock, SOL_SOCKET, SO_RCVBUF, &rcvbufsize, sizeof(rcvbufsize)) < 0) {
-    perror("Error setting receive buffer size");
-  }
-  if (setsockopt(relay_sock, SOL_SOCKET, SO_SNDBUF, &sndbufsize, sizeof(sndbufsize)) < 0) {
-    perror("Error setting send buffer size");
-  }
-
   if (bind(relay_sock, (const struct sockaddr *)&relay_addr, sizeof(relay_addr)) < 0) {
-    perror("relay_sock bind failed");
-    return -1;
+    perror("[Error] relay_sock bind failed");
+    close(relay_sock);
+    return 1;
   }
 
+  return 0;
+}
+
+static void handle_requests() {
   uint8_t buffer[BUFFER_SIZE];
   struct TaskArgs *args;
   struct sockaddr_in client_addr;
   socklen_t client_addr_len;
+
   while (1) {
     memset(buffer, 0, BUFFER_SIZE * sizeof(uint8_t));
     client_addr_len = sizeof(client_addr);
+
     ssize_t recv_len = recvfrom(relay_sock, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&client_addr, &client_addr_len);
+
     if (recv_len < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         continue;
       }
-      perror("recvfrom relay_sock failed");
+      perror("[Error] recvfrom relay_sock failed");
       continue;
     }
+
     args = (struct TaskArgs *)malloc(sizeof(struct TaskArgs));
     args->buffer = (uint8_t *)malloc(BUFFER_SIZE);
     memcpy(args->buffer, buffer, BUFFER_SIZE);
@@ -107,15 +143,20 @@ int main() {
 
     thpool_add_job(thpool, serve, args);
   }
+}
+
+static void cleanup_resources() {
   close(relay_sock);
+
   pthread_mutex_destroy(&mutex_ldt);
   pthread_mutex_destroy(&mutex_dc);
   pthread_mutex_destroy(&mutex_relay_sock);
+
   thpool_wait(thpool);
   thpool_destroy(thpool);
+
   ht_free(local_dns_table);
   cache_free(dns_cache);
-  return 0;
 }
 
 static void read_record() {
@@ -153,9 +194,6 @@ static void *serve(void *args) {
   response.answer = array_init(sizeof(struct AnswerDnsDatagram));
   bool response_initialized = true;
 
-  // Error handling flag
-  bool need_cleanup = false;
-
   pass_sock = socket(AF_INET, SOCK_DGRAM, 0);
   if (pass_sock < 0) {
     perror("pass_sock creation failed");
@@ -169,7 +207,6 @@ static void *serve(void *args) {
   pass_tv.tv_usec = 0;
   if (setsockopt(pass_sock, SOL_SOCKET, SO_RCVTIMEO, &pass_tv, sizeof(pass_tv)) < 0) {
     perror("Error setting socket timeout for pass_sock");
-    need_cleanup = true;
     goto cleanup;
   }
 
@@ -382,7 +419,6 @@ static void *serve(void *args) {
     } else {
       perror("sendto relay_sock failed");
     }
-    need_cleanup = true;
     goto cleanup;
   }
 
@@ -391,7 +427,6 @@ static void *serve(void *args) {
 #endif
 
 cleanup:
-  // Always close the socket if it was created, regardless of the need_cleanup flag
   if (pass_sock > 0) {
     close(pass_sock);
   }

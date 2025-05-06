@@ -56,6 +56,37 @@ hash_table_t *ht_init(ht_hash_func hash, ht_compare_func comp, uint32_t capacity
   return table;
 }
 
+int ht_resize(hash_table_t *table, uint32_t new_capacity) {
+  ht_node_t **new_nodes = (ht_node_t **)malloc(sizeof(ht_node_t *) * new_capacity);
+  if (new_nodes == NULL) return 1;
+
+  memset(new_nodes, 0, sizeof(ht_node_t *) * new_capacity);
+
+  uint32_t old_capacity = table->capacity;
+  ht_node_t **old_nodes = table->nodes;
+
+  table->nodes = new_nodes;
+  table->capacity = new_capacity;
+  uint32_t old_size = table->size;
+  table->size = 0;
+
+  for (uint32_t i = 0; i < old_capacity; i++) {
+    ht_node_t *current = old_nodes[i];
+
+    while (current != NULL) {
+      ht_node_t *next = current->next;
+
+      ht_insert(table, current->key, current->value);
+
+      current = next;
+    }
+  }
+
+  free(old_nodes);
+
+  return 0;
+}
+
 ht_node_t *ht_node_init(void *key, void *value) {
   ht_node_t *new_node = (ht_node_t *)malloc(sizeof(ht_node_t));
   new_node->prev = NULL;
@@ -66,14 +97,19 @@ ht_node_t *ht_node_init(void *key, void *value) {
 }
 
 void ht_insert(hash_table_t *table, void *key, void *value) {
+  if ((float)table->size / table->capacity >= RESIZE_THRESHOLD) {
+    ht_resize(table, table->capacity * 2);
+  }
+
   uint32_t index = table->hash(key, table->key_size, table->capacity);
   ht_node_t *new_node = NULL;
   if (table->nodes[index] != NULL) {
     /* 处理哈希碰撞 */
     for (ht_node_t *node = table->nodes[index]; node != NULL; node = node->next) {
       if (!table->comp(node->key, key, table->key_size)) {
-        // TODO: 这个地方直接用 free 地话有内存泄漏
+        free(node->key);
         free(node->value);
+        node->key = key;
         node->value = value;
         return;
       }
@@ -94,10 +130,10 @@ int ht_contain(hash_table_t *table, void *key) {
   uint32_t index = table->hash(key, table->key_size, table->capacity);
   for (ht_node_t *node = table->nodes[index]; node != NULL; node = node->next) {
     if (!table->comp(node->key, key, table->key_size)) {
-      return HT_SUCCESS;
+      return 1;
     }
   }
-  return HT_FAILURE;
+  return 0;
 }
 
 ht_node_t *ht_lookup(hash_table_t *table, void *key) {
@@ -141,5 +177,7 @@ int ht_free(hash_table_t *table) {
       }
     }
   }
-  return HT_SUCCESS;
+  free(table->nodes);
+  free(table);
+  return 0;
 }

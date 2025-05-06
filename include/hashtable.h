@@ -3,8 +3,9 @@
 
 #include <stdint.h>
 
-typedef enum Stat { HT_SUCCESS, HT_FAILURE } STAT_ET;
-// 除了字符串的长度不确定，其他类型的长度都是确定的
+#define RESIZE_THRESHOLD 0.75
+
+/* 除了字符串的长度不确定，其他类型的长度都是确定的 */
 typedef enum KEY_TYPE { STRING } KEY_TYPE;
 
 typedef uint32_t (*ht_hash_func)(void *, uint32_t, uint32_t);
@@ -32,7 +33,7 @@ typedef struct HashTable {
  * @param s2
  * @param key_size
  *
- * @return int
+ * @return 0 on euqal
  */
 int ht_str_comp(void *s1, void *s2, uint32_t key_size);
 
@@ -56,11 +57,10 @@ ht_node_t *ht_node_init(void *key, void *value);
  */
 hash_table_t *ht_init(ht_hash_func hash, ht_compare_func comp, uint32_t capacity, uint32_t key_size);
 
-// 表满了的情况没有实现
 /**
  * @brief 向 Hash 表插入 k-v 对
  *
- * @note 注意，不管 key/value 是什么类型，都应由 caller 负责其生命周期，建议的做法是在调用处使用动态内存分配
+ * @note 不论 key/value 是什么类型，都应由 caller 负责其生命周期
  *
  * @param table 正确初始化后的哈希表指针
  * @param key key 指针
@@ -76,7 +76,7 @@ void ht_insert(hash_table_t *table, void *key, void *value);
  * @param table
  * @param key
  *
- * @return int HT_SUCCESS : HT_FAILURE
+ * @return 1 on success, 0 otherwise
  */
 int ht_contain(hash_table_t *table, void *key);
 
@@ -104,8 +104,18 @@ void ht_delete(hash_table_t *table, void *key);
  *
  * @param table
  *
- * @return int HT_SUCCESS : HT_FAILURE
+ * @return 0 on success
  */
 int ht_free(hash_table_t *table);
+
+/**
+ * @brief Resize the hash table to a new capacity
+ *
+ * @param table Hash table to resize
+ * @param new_capacity New capacity for the hash table
+ *
+ * @return 0 on success, 1 otherwise
+ */
+int ht_resize(hash_table_t *table, uint32_t new_capacity);
 
 #endif /* HASHTABLE_H */

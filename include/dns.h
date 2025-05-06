@@ -62,7 +62,7 @@ struct RequestDnsDatagram {
 struct ResponseDnsDatagram {
   struct HeaderDnsDatagram header;
   struct QueryDnsDatagram query;
-  array_t *answer;  // struct AnswerDnsDatagram
+  array_t *answer; /* array of struct AnswerDnsDatagram */
 };
 #pragma endregion
 
