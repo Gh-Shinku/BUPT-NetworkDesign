@@ -17,6 +17,12 @@
 
 #define THREAD_NUM 32
 
+/* 0 = no debug, 1 = basic, 2 = verbose */
+static int debug_level = 0;
+static char dns_server_ip[64] = EX_DNS_ADDR;
+static char config_file[256];
+static int query_count = 0;
+
 static hash_table_t *local_dns_table;
 static cache_table_t *dns_cache;
 static int relay_sock;
@@ -33,6 +39,8 @@ static int init_data_structures();
 static int init_socket();
 static void handle_requests();
 static void cleanup_resources();
+void print_usage(const char *prog_name);
+static void parse_args(int argc, char *argv[]);
 
 struct TaskArgs {
   uint8_t *buffer;
@@ -40,7 +48,9 @@ struct TaskArgs {
   ssize_t recv_len;
 };
 
-int main() {
+int main(int argc, char *argv[]) {
+  parse_args(argc, argv);
+
   init_resource_limits();
 
   if (init_data_structures() != 0) {
@@ -50,6 +60,14 @@ int main() {
   if (init_socket() != 0) {
     cleanup_resources();
     return 1;
+  }
+
+  printf("DNS Relay Server started.\n");
+  printf("Using DNS server: %s\n", dns_server_ip);
+  printf("Using configuration file: %s\n", config_file);
+
+  if (debug_level >= 1) {
+    printf("Debug level: %d\n", debug_level);
   }
 
   handle_requests();
@@ -160,7 +178,13 @@ static void cleanup_resources() {
 }
 
 static void read_record() {
-  FILE *table_relay = fopen("../data/dnsrelay.txt", "r");
+  FILE *table_relay = fopen(config_file, "r");
+  if (table_relay == NULL) {
+    perror("Failed to open DNS relay configuration file");
+    fprintf(stderr, "Tried to open: %s\n", config_file);
+    return;
+  }
+
   char buf_ip[128], buf_domain[128];
   while (fscanf(table_relay, "%s", buf_ip) != EOF) {
     fscanf(table_relay, "%s", buf_domain);
@@ -178,9 +202,10 @@ static void read_record() {
     }
   }
   fclose(table_relay);
-#ifdef DEBUG
-  printf("load dnsrelay.txt into memory successfully\n");
-#endif
+
+  if (debug_level >= 1) {
+    printf("Loaded DNS records from %s\n", config_file);
+  }
 }
 
 static void *serve(void *args) {
@@ -221,11 +246,20 @@ static void *serve(void *args) {
   header.id = ntohs(((uint16_t *)buffer)[0]);
   init_answer(&answer);
 
+  // Parse the original DNS query
+  parse_dns_header(&header, buffer);
+
   struct RequestDnsDatagram request;
   parse_dns_query_name(request.query.name, (char *)(buffer + 12));
-#ifdef DEBUG
-  printf("[Debug] parse_dns_query_name successfully: %s\n", request.query.name);
-#endif
+  // Extract query type and class from the original request
+  request.query.type = ntohs(*(uint16_t *)(buffer + 12 + strlen((char *)(buffer + 12)) + 1));
+  request.query.class = ntohs(*(uint16_t *)(buffer + 12 + strlen((char *)(buffer + 12)) + 3));
+
+  if (debug_level > 0) {
+    printf("[Debug] parse_dns_query_name successfully: %s\n", request.query.name);
+    printf("[Debug] Query type: %d, class: %d\n", request.query.type, request.query.class);
+  }
+
   pthread_mutex_lock(&mutex_ldt);
   ht_node_t *ht_node = ht_lookup(local_dns_table, request.query.name);
   pthread_mutex_unlock(&mutex_ldt);
@@ -240,40 +274,95 @@ static void *serve(void *args) {
       ipArr = cache_node->ip_table;
     }
   }
-  if (ipArr != NULL) {
-#ifdef DEBUG
-    printf("[Debug] ipArr != NULL\n");
-#endif
-    header.flags.QR = QR_RESPONSE;
 
-    for (int i = 0; i < ipArr->length; i++) {
-      ++header.ANCOUNT;
+  if (ipArr != NULL) {
+    if (debug_level > 0) printf("[Debug] ipArr != NULL\n");
+    // This is a locally stored domain - construct a proper DNS response
+
+    header.flags.QR = QR_RESPONSE;
+    header.flags.AA = 1;
+    header.flags.RD = 1;
+    header.flags.RA = 1;
+    header.ANCOUNT = 0;
+
+    uint8_t response_buffer[BUFFER_SIZE];
+    memset(response_buffer, 0, BUFFER_SIZE);
+
+    memcpy(response_buffer, buffer, recv_len);
+
+    uint16_t answer_offset = recv_len;
+    bool blacklisted = false;
+
+    for (int i = 0; i < ipArr->length && !blacklisted; i++) {
       char *ip = array_index(ipArr, i, char *);
-#ifdef DEBUG
-      printf("[Debug] ip: %s\n", ip);
-#endif
-      if (!strcmp(ip, BLACK_IP)) {
-        header.flags.RCODE = FLAGS_BAN;
-        inet_pton(AF_INET, BLACK_IP, &answer.address);
-        break;
-      } else {
-        inet_pton(AF_INET, ip, &answer.address);
-        array_append(response.answer, &answer);
+      if (debug_level > 0) {
+        printf("[Debug] ip: %s\n", ip);
       }
+
+      if (!strcmp(ip, BLACK_IP)) {
+        // Domain is blacklisted, return "域名不存在" (domain does not exist) error
+        header.flags.QR = QR_RESPONSE;
+        header.flags.RCODE = 3;  // Name Error (NXDOMAIN) - indicates the domain does not exist
+        header.ANCOUNT = 0;      // No answers for blacklisted domains
+        blacklisted = true;
+
+        // Update header in response buffer
+        put_header(&header, response_buffer);
+
+        // Set response length to include only the query portion
+        back_len = recv_len;
+        break;
+      }
+
+      // For each IP, create an answer record
+      header.ANCOUNT++;
+
+      // Add name pointer (compression - points back to the query name)
+      // 0xC0 is the compression flag, 0x0C is the offset to the query name
+      response_buffer[answer_offset++] = 0xC0;
+      response_buffer[answer_offset++] = 0x0C;
+
+      // Add type (A record = 1)
+      response_buffer[answer_offset++] = 0x00;
+      response_buffer[answer_offset++] = 0x01;
+
+      // Add class (IN = 1)
+      response_buffer[answer_offset++] = 0x00;
+      response_buffer[answer_offset++] = 0x01;
+
+      // Add TTL (use 300 seconds = 5 minutes)
+      uint32_t ttl = htonl(300);
+      memcpy(response_buffer + answer_offset, &ttl, 4);
+      answer_offset += 4;
+
+      // Add data length (4 bytes for IPv4)
+      uint16_t data_len = htons(4);
+      memcpy(response_buffer + answer_offset, &data_len, 2);
+      answer_offset += 2;
+
+      // Add IP address
+      struct in_addr addr;
+      inet_pton(AF_INET, ip, &addr);
+      memcpy(response_buffer + answer_offset, &addr.s_addr, 4);
+      answer_offset += 4;
     }
-#ifdef DEBUG
-    printf("[Debug] before put_header\n");
-#endif
-    put_header(&header, buffer);
-    put_answers(response.answer, buffer + recv_len);
-#ifdef DEBUG
-    printf("[Debug] put_answer successfully\n");
-#endif
-    back_len = recv_len + sizeof(struct AnswerDnsDatagram) * header.ANCOUNT;
+
+    // If the domain isn't blacklisted, update the header in the response buffer
+    // and set the response length
+    if (!blacklisted) {
+      put_header(&header, response_buffer);
+      back_len = answer_offset;
+    }
+
+    // Use the response buffer instead of the original buffer
+    uint8_t *temp_buffer = taskargs->buffer;
+    taskargs->buffer = malloc(BUFFER_SIZE);
+    memcpy(taskargs->buffer, response_buffer, BUFFER_SIZE);
+    free(temp_buffer);
+    buffer = taskargs->buffer;
   } else {
-#ifdef DEBUG
-    printf("[Debug] ipArr = NULL\n");
-#endif
+    // ... existing code for handling non-local domains ...
+    // This is the external DNS server lookup path - no changes needed
     int max_retries = 3;
     int retry_count = 0;
     bool success = false;
@@ -306,15 +395,15 @@ static void *serve(void *args) {
         usleep(10000);
         continue;
       }
-#ifdef DEBUG
-      printf("[Debug] send to pass_sock successfully\n");
-#endif
+      if (debug_level > 0) {
+        printf("[Debug] send to pass_sock successfully\n");
+      }
       recv_len = recvfrom(pass_sock, buffer, BUFFER_SIZE, 0, NULL, NULL);
       if (recv_len < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-#ifdef DEBUG
-          printf("[Debug] External DNS timeout - retry %d of %d\n", retry_count + 1, max_retries);
-#endif
+          if (debug_level > 0) {
+            printf("[Debug] External DNS timeout - retry %d of %d\n", retry_count + 1, max_retries);
+          }
           retry_count++;
           usleep(10000);
           continue;
@@ -357,16 +446,12 @@ static void *serve(void *args) {
       cache_insert(dns_cache, cachenode);
       pthread_mutex_unlock(&mutex_dc);
 
-#ifdef DEBUG
-      printf("[Debug] receive buffer from pass_sock successfully\n");
-#endif
+      if (debug_level > 0) {
+        printf("[Debug] receive buffer from pass_sock successfully\n");
+      }
       back_len = recv_len;
     }
   }
-
-#ifdef DEBUG
-  printf("[Debug] before send info back to relay_sock\n");
-#endif
 
 // The maximum safe size for a UDP DNS packet
 #define MAX_DNS_UDP_SIZE 512
@@ -413,18 +498,18 @@ static void *serve(void *args) {
       pthread_mutex_lock(&mutex_relay_sock);
       sendto(relay_sock, minimal_buffer, sizeof(minimal_buffer), 0, (struct sockaddr *)client_addr, sizeof(*client_addr));
       pthread_mutex_unlock(&mutex_relay_sock);
-#ifdef DEBUG
-      printf("[Debug] Sent minimal truncated response due to message size limitations\n");
-#endif
+      if (debug_level > 0) {
+        printf("[Debug] Sent minimal truncated response due to message size limitations\n");
+      }
     } else {
       perror("sendto relay_sock failed");
     }
     goto cleanup;
   }
 
-#ifdef DEBUG
-  printf("[Debug] send to relay_sock successfully\n");
-#endif
+  if (debug_level > 0) {
+    printf("[Debug] send to relay_sock successfully\n");
+  }
 
 cleanup:
   if (pass_sock > 0) {
@@ -438,4 +523,60 @@ cleanup:
   free(taskargs->buffer);
   free(taskargs);
   return NULL;
+}
+
+void print_usage(const char *prog_name) {
+  printf("Usage: %s [-d | -dd] [dns-server-ipaddr] [config-filename]\n", prog_name);
+  printf("Options:\n");
+  printf("  -d         Enable debug mode (level 1)\n");
+  printf("  -dd        Enable debug mode (level 2)\n");
+  printf("  -h, --help Show this help message and exit\n");
+  printf("\n");
+  printf("Defaults:\n");
+  printf("  DNS Server IP: %s\n", EX_DNS_ADDR);
+  printf("  Config File  : ../data/dnsrelay.txt\n");
+}
+
+/**
+ * Parse command-line arguments according to the syntax:
+ * dnsrelay [-d | -dd] [dns-server-ipaddr] [filename]
+ */
+static void parse_args(int argc, char *argv[]) {
+  int current_arg = 1;
+
+  debug_level = 0;
+  strncpy(dns_server_ip, EX_DNS_ADDR, sizeof(dns_server_ip) - 1);
+  strncpy(config_file, "../data/dnsrelay.txt", sizeof(config_file) - 1);
+
+  if (current_arg < argc) {
+    if (strcmp(argv[current_arg], "-h") == 0 || strcmp(argv[current_arg], "--help") == 0) {
+      print_usage(argv[0]);
+      exit(0);
+    } else if (strcmp(argv[current_arg], "-d") == 0) {
+      debug_level = 1;
+      current_arg++;
+    } else if (strcmp(argv[current_arg], "-dd") == 0) {
+      debug_level = 2;
+      current_arg++;
+    }
+  }
+
+  if (current_arg < argc) {
+    struct in_addr addr;
+    if (inet_pton(AF_INET, argv[current_arg], &addr) == 1) {
+      strncpy(dns_server_ip, argv[current_arg], sizeof(dns_server_ip) - 1);
+      current_arg++;
+    }
+  }
+
+  if (current_arg < argc) {
+    strncpy(config_file, argv[current_arg], sizeof(config_file) - 1);
+    current_arg++;
+  }
+
+  if (current_arg < argc) {
+    fprintf(stderr, "Error: too many arguments.\n");
+    print_usage(argv[0]);
+    exit(1);
+  }
 }
