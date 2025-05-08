@@ -17,7 +17,6 @@ enum QR_TYPE { QR_QUERY, QR_RESPONSE };
 
 enum PORT { DNS_PORT = 53, RELAY_PORT = 4090 };
 
-#pragma region StructDefinitions
 struct DnsFlags {
   uint8_t QR;     /* 0 */
   uint8_t OPcode; /* 1-4 */
@@ -64,9 +63,6 @@ struct ResponseDnsDatagram {
   struct QueryDnsDatagram query;
   array_t *answer; /* array of struct AnswerDnsDatagram */
 };
-#pragma endregion
-
-#pragma region FunctionDefinitions
 
 /**
  * @brief 解析 DNS Message->Question->QNAME
@@ -124,7 +120,5 @@ void print_header(struct HeaderDnsDatagram *header);
 uint16_t generate_random_id();
 void w_bytes32(uint8_t *b, uint32_t v);
 void w_bytes16(uint8_t *b, uint16_t v);
-
-#pragma endregion
 
 #endif /* HEADER_DNS_H */

@@ -10,6 +10,7 @@ include_directories(include)
 
 if(BUILD_APP)
   add_executable(DNS-Relay src/main.c lib/thpool.c lib/dns.c lib/cache.c lib/hashtable.c lib/array.c)
+  target_compile_options(DNS-Relay PRIVATE -O2 -Wall)
 endif()
 
 if(BUILD_TESTING_MINE)

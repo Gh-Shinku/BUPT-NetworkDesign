@@ -80,11 +80,12 @@ void cache_cleanup_expired(cache_table_t *list) {
 
   while (cur_node != NULL) {
     prev = cur_node->prev;
+    cache_node_t *entry = cur_node->value;
+    char *domain = NULL;
 
-    if (cur_node->value && cache_is_expired(cur_node->value)) {
-      char *domain = NULL;
-      if (cur_node->value && cur_node->value->domain) {
-        domain = strdup(cur_node->value->domain);
+    if (entry && cache_is_expired(entry)) {
+      if (entry && entry->domain) {
+        domain = strdup(entry->domain);
       }
 
       if (cur_node->prev) cur_node->prev->next = cur_node->next;
@@ -93,20 +94,20 @@ void cache_cleanup_expired(cache_table_t *list) {
       if (list->head == cur_node) list->head = cur_node->next;
       if (list->tail == cur_node) list->tail = cur_node->prev;
 
-      if (cur_node->value) {
-        if (cur_node->value->domain) {
-          free(cur_node->value->domain);
+      if (entry) {
+        if (entry->domain) {
+          free(entry->domain);
         }
 
-        if (cur_node->value->ip_table) {
-          for (int i = 0; i < cur_node->value->ip_table->length; ++i) {
-            char *ip = array_index(cur_node->value->ip_table, i, char *);
+        if (entry->ip_table) {
+          for (int i = 0; i < entry->ip_table->length; ++i) {
+            char *ip = array_index(entry->ip_table, i, char *);
             if (ip) free(ip);
           }
-          array_free(cur_node->value->ip_table);
+          array_free(entry->ip_table);
         }
 
-        free(cur_node->value);
+        free(entry);
       }
 
       if (domain) {

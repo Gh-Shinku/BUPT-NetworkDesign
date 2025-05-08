@@ -20,8 +20,6 @@ static uint64_t fnv_hash_1a_64(void *key, uint32_t len) {
 
 static uint32_t ht_hash(void *key, uint32_t key_size, uint32_t capacity) {
   if (key_size == STRING) {
-    int cnt = 0;
-    for (char *c = (char *)key; *c != '\0'; ++c) ++cnt;
     return fnv_hash_1a_32(key, strlen((const char *)key)) % capacity;
   } else {
     return fnv_hash_1a_32(key, key_size) % capacity;
@@ -67,7 +65,6 @@ int ht_resize(hash_table_t *table, uint32_t new_capacity) {
 
   table->nodes = new_nodes;
   table->capacity = new_capacity;
-  uint32_t old_size = table->size;
   table->size = 0;
 
   for (uint32_t i = 0; i < old_capacity; i++) {
