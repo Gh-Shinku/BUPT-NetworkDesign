@@ -21,7 +21,6 @@
 static int debug_level = 0;
 static char dns_server_ip[64] = EX_DNS_ADDR;
 static char config_file[256];
-static int query_count = 0;
 
 static hash_table_t *local_dns_table;
 static cache_table_t *dns_cache;

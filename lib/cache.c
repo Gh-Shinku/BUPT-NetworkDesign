@@ -81,11 +81,11 @@ void cache_cleanup_expired(cache_table_t *list) {
   while (cur_node != NULL) {
     prev = cur_node->prev;
     cache_node_t *entry = cur_node->value;
-    char *domain = NULL;
 
     if (entry && cache_is_expired(entry)) {
-      if (entry && entry->domain) {
-        domain = strdup(entry->domain);
+      if (entry->domain) {
+        ht_delete(list->hashtable, entry->domain);
+        free(entry->domain);
       }
 
       if (cur_node->prev) cur_node->prev->next = cur_node->next;
@@ -94,27 +94,15 @@ void cache_cleanup_expired(cache_table_t *list) {
       if (list->head == cur_node) list->head = cur_node->next;
       if (list->tail == cur_node) list->tail = cur_node->prev;
 
-      if (entry) {
-        if (entry->domain) {
-          free(entry->domain);
+      if (entry->ip_table) {
+        for (int i = 0; i < entry->ip_table->length; ++i) {
+          char *ip = array_index(entry->ip_table, i, char *);
+          if (ip) free(ip);
         }
-
-        if (entry->ip_table) {
-          for (int i = 0; i < entry->ip_table->length; ++i) {
-            char *ip = array_index(entry->ip_table, i, char *);
-            if (ip) free(ip);
-          }
-          array_free(entry->ip_table);
-        }
-
-        free(entry);
+        array_free(entry->ip_table);
       }
 
-      if (domain) {
-        ht_delete(list->hashtable, domain);
-        free(domain);
-      }
-
+      free(entry);
       free(cur_node);
       --list->size;
     }
@@ -200,29 +188,6 @@ cache_node_t *cache_lookup(cache_table_t *list, void *key) {
 
   cache_node_t *cache_node = (cache_node_t *)ht_node->value;
   if (cache_node == NULL) return NULL;
-
-  if (cache_is_expired(cache_node)) {
-    char *domain = NULL;
-    if (cache_node->domain) {
-      domain = strdup(cache_node->domain);
-    }
-
-    list_node_t *cur_node = list->head;
-    while (cur_node != NULL && cur_node->value != cache_node) {
-      cur_node = cur_node->next;
-    }
-
-    if (cur_node != NULL) {
-      cache_delete(list, cur_node);
-    }
-
-    if (domain) {
-      ht_delete(list->hashtable, domain);
-      free(domain);
-    }
-
-    return NULL;
-  }
 
   cache_move_to_front(list, cache_node);
 

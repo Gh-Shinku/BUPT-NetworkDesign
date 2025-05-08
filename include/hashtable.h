@@ -100,7 +100,7 @@ ht_node_t *ht_lookup(hash_table_t *table, void *key);
 void ht_delete(hash_table_t *table, void *key);
 
 /**
- * @brief 释放 hash 表
+ * @brief 释放 hash 表，node 中 key 和 value 的生命周期由 hash 表的使用者负责
  *
  * @param table
  *

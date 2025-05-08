@@ -167,8 +167,6 @@ int ht_free(hash_table_t *table) {
     if (table->nodes[i] != NULL) {
       for (ht_node_t *node = table->nodes[i]; node != NULL;) {
         ht_node_t *next = node->next;
-        free(node->key);
-        free(node->value);
         free(node);
         node = next;
       }
