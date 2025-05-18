@@ -109,6 +109,15 @@ void ht_delete(hash_table_t *table, void *key);
 int ht_free(hash_table_t *table);
 
 /**
+ * @brief 传入具体节点回收函数
+ *
+ * @param table
+ * @param clear
+ *
+ */
+void ht_free_custom(hash_table_t *table, void (*clear)(ht_node_t *));
+
+/**
  * @brief Resize the hash table to a new capacity
  *
  * @param table Hash table to resize

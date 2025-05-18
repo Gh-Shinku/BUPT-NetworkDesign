@@ -1,5 +1,6 @@
 #include "hashtable.h"
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -94,6 +95,8 @@ ht_node_t *ht_node_init(void *key, void *value) {
 }
 
 void ht_insert(hash_table_t *table, void *key, void *value) {
+  assert(table != NULL && key != NULL && value != NULL);
+
   if ((float)table->size / table->capacity >= RESIZE_THRESHOLD) {
     ht_resize(table, table->capacity * 2);
   }
@@ -134,6 +137,7 @@ int ht_contain(hash_table_t *table, void *key) {
 }
 
 ht_node_t *ht_lookup(hash_table_t *table, void *key) {
+  assert(table != NULL && key != NULL);
   uint32_t index = table->hash(key, table->key_size, table->capacity);
   for (ht_node_t *node = table->nodes[index]; node != NULL; node = node->next) {
     if (!table->comp(node->key, key, table->key_size)) {

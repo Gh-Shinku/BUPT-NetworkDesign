@@ -1,23 +1,56 @@
 #ifndef HEADER_DNS_H
 #define HEADER_DNS_H
 
+#include <arpa/inet.h>
 #include <stdint.h>
 
 #include "array.h"
 
 #define BUFFER_SIZE 1024
-#define DNS_BUFFER_SIZE 1024
+#define UDP_DATAGRAM_MAX 512
+#define NAME_MAX_SIZE 256
+#define MSG_HEADER_SIZE 12
 #define EX_DNS_ADDR "8.8.8.8"
-#define LOCAL_ADDR "127.0.0.1"
+#define LOOP_BACK_ADDR "127.0.0.1"
 #define BLACK_IP "0.0.0.0"
 #define DEFAULT_TTL 300
 #define FLAGS_BAN 5
+#define DOMAIN_PTR_MASK 0xC000
+#define MAX_RETRY 3
 
 enum QR_TYPE { QR_QUERY, QR_RESPONSE };
 
 enum PORT { DNS_PORT = 53, RELAY_PORT = 4090 };
 
-struct DnsFlags {
+typedef struct {
+  uint32_t ipv4_address;
+} A_RData;
+
+typedef struct {
+  struct in6_addr ipv6_address;
+} AAAA_RData;
+
+typedef struct {
+  char *cname;
+} CNAME_RData;
+
+typedef union {
+  A_RData a_record;
+  AAAA_RData aaaa_record;
+  CNAME_RData cname_record;
+} RData;
+
+/* name 需要进行内存分配，故提供了 RR_init */
+typedef struct DnsResourceRecord {
+  uint8_t *name;
+  uint16_t type;
+  uint16_t class;
+  uint32_t ttl;
+  uint16_t rdlength;
+  RData rdata;
+} DnsResourceRecord;
+
+typedef struct DnsMessageHeaderFlags {
   uint8_t QR;     /* 0 */
   uint8_t OPcode; /* 1-4 */
   uint8_t AA;     /* 5 */
@@ -26,52 +59,55 @@ struct DnsFlags {
   uint8_t RA;     /* 8 */
   uint8_t Z;      /* 9-11 */
   uint8_t RCODE;  /* 12-15 */
-};
+} DnsMessageHeaderFlags;
 
-struct HeaderDnsDatagram {
+/* 无任何需要内存分配的成员 */
+typedef struct DnsMessageHeader {
   uint16_t id;
-  struct DnsFlags flags;
+  struct DnsMessageHeaderFlags flags;
   uint16_t QDCOUNT;
   uint16_t ANCOUNT;
   uint16_t NSCOUNT;
   uint16_t ARCOUNT;
-};
+} DnsMessageHeader;
 
-struct QueryDnsDatagram {
+/* name 需要进行内存分配，但 question 不会被直接使用，因此由使用该类型的结构体负责其初始化 */
+typedef struct DnsMessageQuestion {
   uint16_t type;
   uint16_t class;
-  char name[128];
-};
+  char *name;
+} DnsMessageQuestion;
 
-struct AnswerDnsDatagram {
-  uint16_t name;
-  uint16_t type;
-  uint16_t class;
-  uint16_t data_len;
-  uint32_t ttl;
-  uint32_t address;
-};
+typedef struct DnsResourceRecord DnsMessageAnswer;
 
-struct RequestDnsDatagram {
-  struct HeaderDnsDatagram header;
-  struct QueryDnsDatagram query;
-};
+typedef struct DnsRequest {
+  struct DnsMessageHeader header;
+  struct DnsMessageQuestion query;
+} DnsRequest;
 
-/* 中继服务器提供的查找比较局限，仅仅处理Type=1的情况，将域名解析为IPv4地址 */
-struct ResponseDnsDatagram {
-  struct HeaderDnsDatagram header;
-  struct QueryDnsDatagram query;
-  array_t *answer; /* array of struct AnswerDnsDatagram */
-};
+typedef struct DnsResponse {
+  struct DnsMessageHeader header;
+  struct DnsMessageQuestion query;
+  array_t *answer; /* array of struct DnsMessageAnswer */
+} DnsResponse;
 
 /**
- * @brief 解析 DNS Message->Question->QNAME
+ * @brief 从域名字符串构造 DNS 规定的域名存储格式
  *
- * @param domain 用于存储解析的 QNAME 内容
- * @param qname Message->Question->QNAME buffer
+ * @param domain
+ * @param buf
  *
  */
-void parse_dns_query_name(char *domain, char *qname);
+void construct_dns_name(const char *domain, uint8_t *buf);
+
+/**
+ * @brief 解析 DNS 域名格式
+ *
+ * @param domain 用于存储解析的 name 内容
+ * @param name RR->NAME buffer
+ *
+ */
+void parse_dns_name(char *domain, char *name);
 
 /**
  * @brief 解析 DNS Message->Header->uflags
@@ -80,7 +116,7 @@ void parse_dns_query_name(char *domain, char *qname);
  * @param uflags Message->Header->uflags buffer
  *
  */
-void parse_dns_flags(struct DnsFlags *flags, uint16_t uflags);
+void parse_dns_flags(DnsMessageHeaderFlags *flags, uint16_t uflags);
 
 /**
  * @brief 解析 DNS Message->Header
@@ -89,7 +125,16 @@ void parse_dns_flags(struct DnsFlags *flags, uint16_t uflags);
  * @param buffer Message->Header buffer
  *
  */
-void parse_dns_header(struct HeaderDnsDatagram *header, uint8_t *buffer);
+void parse_dns_header(DnsMessageHeader *header, const uint8_t *buffer);
+
+/**
+ * @brief 解析 DNS 请求报文
+ *
+ * @param request
+ * @param buffer
+ *
+ */
+void parse_dns_request(DnsRequest *request, const uint8_t *buffer);
 
 /**
  * @brief 解析 DNS 响应报文
@@ -98,23 +143,48 @@ void parse_dns_header(struct HeaderDnsDatagram *header, uint8_t *buffer);
  * @param buffer Message buffer
  *
  */
-void parse_dns_response(struct ResponseDnsDatagram *response, uint8_t *buffer);
+void parse_dns_response(DnsResponse *response, const uint8_t *buffer);
 
 /* init */
-void init_flags(struct DnsFlags *flags);
-void init_header(struct HeaderDnsDatagram *header);
-void init_query(struct QueryDnsDatagram *query);
-void init_request(struct RequestDnsDatagram *request);
-void init_answer(struct AnswerDnsDatagram *answer);
+void init_flags(DnsMessageHeaderFlags *flags, uint8_t QR, uint8_t OPcode, uint8_t AA, uint8_t TC, uint8_t RD, uint8_t RA, uint8_t Z,
+                uint8_t RCODE);
+void init_header(DnsMessageHeader *header, uint16_t id, DnsMessageHeaderFlags flags, uint16_t QDCOUNT, uint16_t ANCOUNT, uint16_t NSCOUNT,
+                 uint16_t ARCOUNT);
+void init_answer(DnsMessageAnswer *answer);
+
+/**
+ * @brief 初始化 RR，进行内存分配
+ *
+ * @return DnsResourceRecord*
+ */
+DnsResourceRecord *RR_init();
+
+/**
+ * @brief 复制 RR，进行内存分配
+ *
+ * @param RR
+ *
+ * @return DnsResourceRecord*
+ */
+DnsResourceRecord *RR_dup(DnsResourceRecord *RR);
+
+/**
+ * @brief 回收 RR 的内存
+ *
+ * @param RR
+ *
+ */
+void RR_delete(DnsResourceRecord *RR);
 
 /* put */
-int put_header(struct HeaderDnsDatagram *header, uint8_t *buffer);
-int put_request(struct RequestDnsDatagram *request, uint8_t *buffer);
+void put_header(DnsMessageHeader *header, uint8_t *buffer);
+int put_request(DnsRequest *request, uint8_t *buffer);
+int put_answer(DnsMessageAnswer *answer, uint8_t *buffer);
 void put_answers(array_t *answers, uint8_t *buffer);
 
 /* log */
-void print_flags(struct DnsFlags *flags);
-void print_header(struct HeaderDnsDatagram *header);
+void print_flags(DnsMessageHeaderFlags *flags);
+void print_header(DnsMessageHeader *header);
 
 /* Utils */
 uint16_t generate_random_id();

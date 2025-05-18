@@ -1,14 +1,35 @@
 #include "dns.h"
 
 #include <arpa/inet.h>
+#include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-void parse_dns_query_name(char *domain, char *qname) {
-  char *buf_ptr = qname, *buf_domain_ptr = domain;
+void construct_dns_name(const char *domain, uint8_t *buf) {
+  const char *p = domain;
+  while (*p) {
+    const char *base = p;
+    uint8_t len = 0;
+    while (*p && *p != '.') {
+      ++len;
+      ++p;
+    }
+
+    *buf++ = len;
+    memcpy(buf, base, len);
+    buf += len;
+    if (*p == '.') {
+      ++p;
+    }
+  }
+  *buf = 0;
+}
+
+void parse_dns_name(char *domain, char *name) {
+  char *buf_ptr = name, *buf_domain_ptr = domain;
 #ifdef DEBUG
   // printf("[Debug] qname: %s, domain: %s\n", qname, domain);
 #endif
@@ -22,7 +43,7 @@ void parse_dns_query_name(char *domain, char *qname) {
   *--buf_domain_ptr = '\0';
 }
 
-void parse_dns_flags(struct DnsFlags *flags, uint16_t uflags) {
+void parse_dns_flags(struct DnsMessageHeaderFlags *flags, uint16_t uflags) {
   flags->QR = (uflags >> 15) & 0x1;
   flags->OPcode = (uflags >> 11) & 0xf;
   flags->AA = (uflags >> 10) & 0x1;
@@ -33,7 +54,7 @@ void parse_dns_flags(struct DnsFlags *flags, uint16_t uflags) {
   flags->RCODE = (uflags)&0xf;
 }
 
-void parse_dns_header(struct HeaderDnsDatagram *header, uint8_t *buffer) {
+void parse_dns_header(struct DnsMessageHeader *header, const uint8_t *buffer) {
   int offset = 0;
   memcpy(&header->id, buffer + offset, sizeof(uint16_t));
   header->id = ntohs(header->id);
@@ -57,123 +78,155 @@ void parse_dns_header(struct HeaderDnsDatagram *header, uint8_t *buffer) {
   offset += 2;
 }
 
-void parse_dns_response(struct ResponseDnsDatagram *response, uint8_t *buffer) {
-  if (response == NULL || buffer == NULL) return;
+void parse_dns_request(DnsRequest *request, const uint8_t *buffer) {
+  assert(request && buffer);
 
   int offset = 0;
-  parse_dns_header(&response->header, buffer);
-  offset += 12;
+  parse_dns_header(&request->header, buffer);
+  offset += MSG_HEADER_SIZE;
 
-  if (buffer[offset] == '\0') return;
-
-  parse_dns_query_name(response->query.name, (char *)(buffer + offset));
+  request->query.name = (char *)malloc(NAME_MAX_SIZE);
+  assert(request->query.name);
+  parse_dns_name(request->query.name, (char *)(buffer + offset));
   offset += strlen((char *)(buffer + offset)) + 1;
 
-  if (offset + 4 > DNS_BUFFER_SIZE) return;
+  memcpy(&request->query.type, buffer + offset, sizeof(uint16_t));
+  request->query.type = ntohs(request->query.type);
+  offset += 2;
 
-  memcpy(&response->query.type, buffer + offset, sizeof(uint16_t));
+  memcpy(&request->query.class, buffer + offset, sizeof(uint16_t));
+  request->query.class = ntohs(request->query.class);
+  offset += 2;
+}
+
+void parse_dns_response(struct DnsResponse *response, const uint8_t *buffer) {
+  assert(response && buffer);
+
+  int offset = 0;
+
+  parse_dns_header(&response->header, buffer);
+  offset += MSG_HEADER_SIZE;
+
+  response->query.name = malloc(NAME_MAX_SIZE);
+  assert(response->query.name);
+  parse_dns_name(response->query.name, (char *)(buffer + offset));
+
+  memcpy(&response->query.type, buffer + offset, 2);
   response->query.type = ntohs(response->query.type);
   offset += 2;
 
-  memcpy(&response->query.class, buffer + offset, sizeof(uint16_t));
+  memcpy(&response->query.class, buffer + offset, 2);
   response->query.class = ntohs(response->query.class);
   offset += 2;
 
-  if (response->answer == NULL) {
-    response->answer = array_init(sizeof(struct AnswerDnsDatagram));
-    if (response->answer == NULL) return;
-  }
+  response->answer = array_init(sizeof(DnsMessageAnswer));
 
-  struct AnswerDnsDatagram answer;
+  DnsMessageAnswer *answer = RR_init();
+  uint16_t first2 = 0;
+  while (offset < UDP_DATAGRAM_MAX && buffer[offset] != 0x00) {
+    first2 = *(uint16_t *)(buffer + offset);
+    if /* 是指针 */ (!((first2 & DOMAIN_PTR_MASK) ^ DOMAIN_PTR_MASK)) {
+      parse_dns_name((char *)answer->name, (char *)buffer + first2);
+      offset += 2;
+    } else {
+      parse_dns_name((char *)answer->name, (char *)buffer + offset);
+      offset += strlen((char *)answer->name) + 1;
+    }
 
-  while (offset < DNS_BUFFER_SIZE && *(buffer + offset)) {
-    if (offset + 12 > DNS_BUFFER_SIZE) break;
-
-    memcpy(&answer.name, buffer + offset, sizeof(uint16_t));
+    memcpy(&answer->type, buffer + offset, sizeof(uint16_t));
+    answer->type = ntohs(answer->type);
     offset += 2;
 
-    memcpy(&answer.type, buffer + offset, sizeof(uint16_t));
-    answer.type = ntohs(answer.type);
+    memcpy(&answer->class, buffer + offset, sizeof(uint16_t));
+    answer->class = ntohs(answer->class);
     offset += 2;
 
-    memcpy(&answer.class, buffer + offset, sizeof(uint16_t));
-    answer.class = ntohs(answer.class);
-    offset += 2;
-
-    memcpy(&answer.ttl, buffer + offset, sizeof(uint32_t));
-    answer.ttl = ntohl(answer.ttl);
+    memcpy(&answer->ttl, buffer + offset, sizeof(uint32_t));
+    answer->ttl = ntohl(answer->ttl);
     offset += 4;
 
     uint16_t data_len;
     memcpy(&data_len, buffer + offset, sizeof(uint16_t));
     data_len = ntohs(data_len);
-    answer.data_len = data_len;
+    answer->rdlength = data_len;
     offset += 2;
 
-    if (data_len > DNS_BUFFER_SIZE || offset + data_len > DNS_BUFFER_SIZE) {
-      break;
+    switch (data_len) {
+      case 4: {
+        memcpy(&answer->rdata.a_record.ipv4_address, buffer + offset, data_len);
+        break;
+      }
+      case 16: {
+        memcpy(&answer->rdata.aaaa_record.ipv6_address, buffer + offset, data_len);
+        break;
+      }
     }
-
-    if (answer.type == 1 && data_len == 4) {
-      memcpy(&answer.address, buffer + offset, sizeof(uint32_t));
-    } else {
-      answer.address = 0;
-    }
-
     offset += data_len;
-
-    if (answer.type == 1) {
-      array_append(response->answer, &answer);
-    }
+    array_append(response->answer, &answer);
   }
 }
 
-void init_flags(struct DnsFlags *flags) {
-  flags->QR = QR_QUERY;
-  flags->OPcode = 0x0;
-  flags->AA = 0;
-  flags->TC = 0;
-  flags->RD = 1;
-  flags->RA = 0;
-  flags->Z = 0;
-  flags->RCODE = 0x0;
+void init_flags(DnsMessageHeaderFlags *flags, uint8_t QR, uint8_t OPcode, uint8_t AA, uint8_t TC, uint8_t RD, uint8_t RA, uint8_t Z,
+                uint8_t RCODE) {
+  flags->QR = QR;
+  flags->OPcode = OPcode;
+  flags->AA = AA;
+  flags->TC = TC;
+  flags->RD = RD;
+  flags->RA = RA;
+  flags->Z = Z;
+  flags->RCODE = RCODE;
 }
 
-void init_header(struct HeaderDnsDatagram *header) {
-  header->id = generate_random_id();
-  init_flags(&header->flags);
-  header->QDCOUNT = 0x0001;
-  header->ANCOUNT = 0x0000;
-  header->NSCOUNT = 0x0000;
-  header->ARCOUNT = 0x0000;
+void init_header(DnsMessageHeader *header, uint16_t id, DnsMessageHeaderFlags flags, uint16_t QDCOUNT, uint16_t ANCOUNT, uint16_t NSCOUNT,
+                 uint16_t ARCOUNT) {
+  header->id = id;
+  header->flags = flags;
+  header->QDCOUNT = QDCOUNT;
+  header->ANCOUNT = ANCOUNT;
+  header->NSCOUNT = NSCOUNT;
+  header->ARCOUNT = ARCOUNT;
 }
 
-void init_query(struct QueryDnsDatagram *query) {
-  query->type = 0x0001;
-  query->class = 0x0001;
-}
-
-void init_request(struct RequestDnsDatagram *request) {
-  init_header(&request->header);
-  init_query(&request->query);
-}
-
-void init_answer(struct AnswerDnsDatagram *answer) {
-  answer->name = 0xC00C;
+void init_answer(DnsMessageAnswer *answer) {
   answer->type = 0x0001;
   answer->class = 0x0001;
   answer->ttl = DEFAULT_TTL;
-  answer->data_len = 4;
+  answer->rdlength = 4;
 }
 
-static void put_flags(struct DnsFlags *flags, uint8_t *buffer) {
+DnsResourceRecord *RR_init() {
+  DnsResourceRecord *newRR = (DnsResourceRecord *)malloc(sizeof(DnsResourceRecord));
+  assert(newRR);
+  newRR->name = (uint8_t *)malloc(NAME_MAX_SIZE);
+  assert(newRR->name);
+  return newRR;
+}
+
+DnsResourceRecord *RR_dup(DnsResourceRecord *RR) {
+  DnsResourceRecord *newRR = (DnsResourceRecord *)malloc(sizeof(DnsResourceRecord));
+  assert(newRR);
+  memcpy(newRR, RR, sizeof(DnsResourceRecord));
+  int name_len = strlen((char *)RR->name) + 1;
+  newRR->name = (uint8_t *)malloc(sizeof(uint8_t) * name_len);
+  assert(newRR->name);
+  memcpy(newRR->name, RR->name, name_len);
+  return newRR;
+}
+
+void RR_delete(DnsResourceRecord *RR) {
+  free(RR->name);
+  free(RR);
+}
+
+static void put_flags(struct DnsMessageHeaderFlags *flags, uint8_t *buffer) {
   int offset = 0;
   buffer[offset++] |= (flags->QR << 7) | (flags->OPcode << 3) | (flags->AA << 2) | (flags->TC << 1) | (flags->RD);
   buffer[offset++] |= (flags->RA << 7) | (flags->Z << 4) | (flags->RCODE);
 }
 
-int put_header(struct HeaderDnsDatagram *header, uint8_t *buffer) {
-  if (header == NULL || buffer == NULL) return 0;
+void put_header(struct DnsMessageHeader *header, uint8_t *buffer) {
+  assert(header != NULL && buffer != NULL);
 
   int offset = 0;
   w_bytes16(buffer + offset, header->id);
@@ -196,15 +249,14 @@ int put_header(struct HeaderDnsDatagram *header, uint8_t *buffer) {
 
   w_bytes16(buffer + offset, header->ARCOUNT);
   offset += 2;
-
-  return offset;
 }
 
-int put_request(struct RequestDnsDatagram *request, uint8_t *buffer) {
+int put_request(struct DnsRequest *request, uint8_t *buffer) {
   if (request == NULL || buffer == NULL) return 0;
 
   int offset = 0;
-  offset += put_header(&request->header, buffer + offset);
+  put_header(&request->header, buffer + offset);
+  offset += MSG_HEADER_SIZE;
 
   int cnt = 0;
   for (int i = 0; request->query.name[i] != '\0'; i++) {
@@ -230,35 +282,61 @@ int put_request(struct RequestDnsDatagram *request, uint8_t *buffer) {
   return offset;
 }
 
+int put_answer(DnsMessageAnswer *answer, uint8_t *buffer) {
+  assert(answer != NULL && buffer != NULL);
+  int offset = 0;
+  int name_len = 0;
+  uint16_t first2 = *(uint16_t *)answer->name;
+  if /* 是指针 */ (!((first2 & DOMAIN_PTR_MASK) ^ DOMAIN_PTR_MASK)) {
+    name_len = 2;
+    w_bytes16(buffer + offset, first2);
+  } /* 是域名普通表示 */ else {
+    /* name 也以 0x00 结尾，故用 strlen 计算长度 */
+    name_len = strlen((char *)answer->name) + 1;
+    memcpy(buffer + offset, answer->name, name_len);
+  }
+
+  offset += name_len;
+
+  w_bytes16(buffer + offset, answer->type);
+  offset += 2;
+
+  w_bytes16(buffer + offset, answer->class);
+  offset += 2;
+
+  w_bytes32(buffer + offset, answer->ttl);
+  offset += 4;
+
+  w_bytes16(buffer + offset, answer->rdlength);
+  offset += 2;
+
+  switch (answer->rdlength) {
+    case 4: {
+      memcpy(buffer + offset, &answer->rdata.a_record.ipv4_address, 4);
+      break;
+    }
+    case 16: {
+      memcpy(buffer + offset, &answer->rdata.aaaa_record.ipv6_address, 16);
+      break;
+    }
+  }
+  memcpy(buffer + offset, &answer->rdata, answer->rdlength);
+  offset += answer->rdlength;
+
+  return offset;
+}
+
 void put_answers(array_t *answers, uint8_t *buffer) {
-  if (answers == NULL || buffer == NULL) return;
+  assert(answers != NULL && buffer != NULL);
 
   int offset = 0;
   for (int i = 0; i < answers->length; i++) {
-    struct AnswerDnsDatagram *ans = &array_index(answers, i, struct AnswerDnsDatagram);
-    if (ans == NULL) continue;
-
-    w_bytes16(buffer + offset, ans->name);
-    offset += 2;
-
-    w_bytes16(buffer + offset, ans->type);
-    offset += 2;
-
-    w_bytes16(buffer + offset, ans->class);
-    offset += 2;
-
-    w_bytes32(buffer + offset, ans->ttl);
-    offset += 4;
-
-    w_bytes16(buffer + offset, ans->data_len);
-    offset += 2;
-
-    memcpy(buffer + offset, &ans->address, sizeof(uint32_t));
-    offset += 4;
+    DnsMessageAnswer *ans = &array_index(answers, i, DnsMessageAnswer);
+    offset += put_answer(ans, buffer + offset);
   }
 }
 
-void print_flags(struct DnsFlags *flags) {
+void print_flags(struct DnsMessageHeaderFlags *flags) {
   printf(
       "QR: %d\n"
       "OPcode: %d\n"
@@ -271,7 +349,7 @@ void print_flags(struct DnsFlags *flags) {
       flags->QR, flags->OPcode, flags->AA, flags->TC, flags->RD, flags->RA, flags->Z, flags->RCODE);
 }
 
-void print_header(struct HeaderDnsDatagram *header) {
+void print_header(struct DnsMessageHeader *header) {
   printf("ID: %x\n", header->id);
   print_flags(&header->flags);
   printf(

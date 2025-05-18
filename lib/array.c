@@ -7,10 +7,12 @@
 
 array_t *array_init(uint32_t e_size) {
   array_t *array = (array_t *)malloc(sizeof(array_t));
+  assert(array);
   array->capacity = DEFAULT_CAPACITY;
   array->length = 0;
   array->e_size = e_size;
   array->table = (void *)malloc(array->e_size * array->capacity);
+  assert(array->table);
   return array;
 }
 

@@ -32,7 +32,7 @@ dns_table 是一个`g_hash_table`，key 是`char *`，value 是`GArray *`
 
 value 是存储`char *`的动态数组
 
-目前来看，response中的answer(`struct AnswerDnsDatagram`类型)中的
+目前来看，response中的answer(`struct DnsMessageAnswer`类型)中的
 `address`成员是`uint32_t`，因此，在插入dns_table之前，需要做一次转换
 
 ## 要求：不能引入第三方库
