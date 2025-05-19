@@ -22,6 +22,8 @@ enum QR_TYPE { QR_QUERY, QR_RESPONSE };
 
 enum PORT { DNS_PORT = 53, RELAY_PORT = 4090 };
 
+enum { DNS_TYPE_A = 1, DNS_TYPE_AAAA = 28, DNS_TYPE_CNAME = 5 };
+
 typedef struct {
   uint32_t ipv4_address;
 } A_RData;
@@ -50,6 +52,7 @@ typedef struct DnsResourceRecord {
   RData rdata;
 } DnsResourceRecord;
 
+/* 无任何需要内存分配的成员 */
 typedef struct DnsMessageHeaderFlags {
   uint8_t QR;     /* 0 */
   uint8_t OPcode; /* 1-4 */
@@ -101,13 +104,15 @@ typedef struct DnsResponse {
 void construct_dns_name(const char *domain, uint8_t *buf);
 
 /**
- * @brief 解析 DNS 域名格式
+ * @brief 解析 DNS 域名格式，包括对指针的处理
  *
- * @param domain 用于存储解析的 name 内容
- * @param name RR->NAME buffer
+ * @param domain domain 要求调用方进行预先分配，传入需要存储 domain 的地址，解析后，*domain 就指向字符串形式域名
+ * @param buf 完整的 response buffer
+ * @param offset 该偏移量是指当前待解析域名相对于 buf 的偏移量
  *
+ * @return int 该 domain 在 buf 中占的长度
  */
-void parse_dns_name(char *domain, char *name);
+int parse_dns_name(char **domain, const uint8_t *buf, int offset);
 
 /**
  * @brief 解析 DNS Message->Header->uflags
@@ -185,10 +190,29 @@ void put_answers(array_t *answers, uint8_t *buffer);
 /* log */
 void print_flags(DnsMessageHeaderFlags *flags);
 void print_header(DnsMessageHeader *header);
+void print_question(DnsMessageQuestion *question);
+void print_answer(DnsMessageAnswer *answer);
+void print_response(DnsResponse *response);
 
 /* Utils */
 uint16_t generate_random_id();
+
+/**
+ * @brief 按大端法将 32bit 的值写入 b 缓冲区中
+ *
+ * @param b
+ * @param v
+ *
+ */
 void w_bytes32(uint8_t *b, uint32_t v);
+
+/**
+ * @brief 按大端法将 16bit 的值写入 b 缓冲区中
+ *
+ * @param b
+ * @param v
+ *
+ */
 void w_bytes16(uint8_t *b, uint16_t v);
 
 #endif /* HEADER_DNS_H */

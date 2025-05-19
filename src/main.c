@@ -52,7 +52,7 @@ struct TaskArgs {
 int main(int argc, char *argv[]) {
   parse_args(argc, argv);
 
-  init_resource_limits();
+  // init_resource_limits();
 
   if (init_data_structures() != 0) {
     return 1;
@@ -63,9 +63,10 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  printf("DNS Relay Server started.\n");
-  printf("Using DNS server: %s\n", dns_server_ip);
-  printf("Using configuration file: %s\n", config_file);
+  if (debug_level > 0) {
+    printf("[DEBUG] Using DNS server: %s\n", dns_server_ip);
+    printf("[DEBUG] Using dnsrelay file: %s\n", config_file);
+  }
 
   if (debug_level >= 1) {
     printf("Debug level: %d\n", debug_level);
@@ -164,6 +165,14 @@ static void handle_requests() {
   }
 }
 
+static void cleanup_record(ht_node_t *node) {
+  local_record_t *record = (local_record_t *)node->value;
+  free(record->domain);
+  free(record->ip);
+  free(record);
+  free(node->key);
+}
+
 static void cleanup_resources() {
   close(relay_sock);
 
@@ -174,8 +183,7 @@ static void cleanup_resources() {
   thpool_wait(thpool);
   thpool_destroy(thpool);
 
-  /* TODO: local_dns_table 的内存并未正确回收 */
-  ht_free(local_dns_table);
+  ht_free_custom(local_dns_table, cleanup_record);
   cache_free(dns_cache);
 }
 
@@ -192,7 +200,7 @@ static void read_record() {
     fscanf(table_relay, "%s", buf_domain);
     /* 不论该 key 是否重复，都进行插入 */
     local_record_t *record = local_record_init(buf_domain, buf_ip);
-    ht_insert(local_dns_table, strdup(buf_domain), record);
+    ht_insert(local_dns_table, buf_domain, record);
   }
   fclose(table_relay);
 
@@ -206,7 +214,7 @@ static void *serve(void *args) {
   struct TaskArgs *taskargs = (struct TaskArgs *)args;
   uint8_t *buffer = taskargs->buffer;
   struct sockaddr_in *client_addr = &taskargs->sockaddr;
-  ssize_t recv_len = taskargs->recv_len, send_len = 0, back_len = 0;
+  ssize_t relay_recv_len = taskargs->recv_len, pass_recv_len = 0, send_len = 0, back_len = 0;
 
   /* 创建转发 socket: relay server -> externel dns server */
   int pass_sock;
@@ -234,15 +242,6 @@ static void *serve(void *args) {
 
   DnsRequest request;
   parse_dns_request(&request, buffer);
-  if (debug_level > 0) {
-    for (int i = 0; i < recv_len; ++i) {
-      printf("%2x ", buffer[i]);
-      if (i > 0 && i % 8 == 0) {
-        printf("\n");
-      }
-    }
-    printf("\n");
-  }
 
   DnsResponse response;
 
@@ -276,60 +275,73 @@ static void *serve(void *args) {
 
       put_header(&header, buffer);
       /* 因为被封禁，所以根本不提供 answer 部分 */
-      back_len = recv_len;
+      back_len = relay_recv_len;
     } else {
       init_flags(&flags, QR_RESPONSE, header.flags.OPcode, 0, 0, header.flags.TC, 1, 0, 0);
       init_header(&header, header.id, flags, header.QDCOUNT, 1, 0, 0);
 
       put_header(&header, buffer);
-      /* 构造 answer 之后修改成调用 init_answer */
       DnsMessageAnswer *answer = RR_init();
       answer->type = 1;
       answer->class = 1;
       answer->ttl = DEFAULT_TTL;
       answer->rdlength = 4;
       inet_pton(AF_INET, ip, &answer->rdata.a_record.ipv4_address);
-      *(uint16_t *)answer->name = MSG_HEADER_SIZE | DOMAIN_PTR_MASK;
+      *(uint16_t *)answer->name = MSG_HEADER_SIZE | DOMAIN_PTR_MASK; /* 0xc00c */
       /* 在 local_dns_table 中的记录不需要 Authority & Additional */
       /* put answer */
       if (debug_level > 0) {
-        printf("[DEBUG] recv_len: %ld\n", recv_len);
+        printf("[DEBUG] recv_len: %ld\n", relay_recv_len);
       }
-      back_len = recv_len + put_answer(answer, buffer + recv_len);
+      back_len = relay_recv_len + put_answer(answer, buffer + relay_recv_len);
+      RR_delete(answer);
     }
   } else /* 再从 dns_cache 中查找 */ {
+    /* TODO: 从缓存中构造的操作并不正确 */
     pthread_mutex_lock(&mutex_dc);
     cache_node_t *cache_node = cache_lookup(dns_cache, request.query.name);
     pthread_mutex_unlock(&mutex_dc);
     if (cache_node != NULL) {
       array_t *RRs = cache_node->RRs;
       /* 还需要判断是否超出 UDP 报文大小，这个放在最后发送的位置进行判断 */
-      init_flags(&flags, QR_RESPONSE, header.flags.OPcode, 0, 0, header.flags.TC, 1, 0, 5);
-      init_header(&header, header.id, flags, header.QDCOUNT, RRs->length, 0, 0);
-      /* put header 可以放在后面做 */
+      init_flags(&flags, QR_RESPONSE, request.header.flags.OPcode, 0, 0, request.header.flags.TC, 1, 0, 5);
+      init_header(&header, request.header.id, flags, request.header.QDCOUNT, RRs->length, 0, 0);
+      put_header(&header, buffer);
       int offset = 0;
       for (int i = 0; i < RRs->length; i++) {
+        /* 这里的 RR 是 parse_dns_response 时插入的，理论上已经过正确的设置 */
         DnsMessageAnswer *ans = &array_index(RRs, i, DnsMessageAnswer);
-        if (i > 0) {
-          *(uint16_t *)ans->name = (uint16_t)recv_len | DOMAIN_PTR_MASK;
-        }
-        offset += put_answer(ans, buffer + recv_len + offset);
+        print_answer(ans);
+        offset += put_answer(ans, buffer + relay_recv_len + offset);
       }
-      back_len = recv_len + offset;
+      back_len = relay_recv_len + offset;
     } else /* 向外部 DNS 服务器发送请求 */ {
       /* TODO: 这里有个所谓的 ID 转换，之后再说 */
       /* 由于 UDP 请求可能会失败，设置重传机制 */
       int cnt = 0;
       bool success = false;
+      if (back_len > UDP_DATAGRAM_MAX) {
+        printf("[DEBUG] back_len:%ld = recv_len:%ld + offset:%ld\n", back_len, relay_recv_len, back_len - relay_recv_len);
+      }
       while (cnt < MAX_RETRY && !success) {
         ++cnt;
-        send_len = sendto(pass_sock, buffer, recv_len, 0, (struct sockaddr *)&pass_addr, sizeof(pass_addr));
+        send_len = sendto(pass_sock, buffer, relay_recv_len, 0, (struct sockaddr *)&pass_addr, sizeof(pass_addr));
         if (send_len < 0) {
+          printf("[DEBUG] send buffer hex dump (len = %ld):\n", relay_recv_len);
+          for (int i = 0; i < relay_recv_len; ++i) {
+            printf("%02x ", (unsigned char)buffer[i]);
+            if (i % 16 == 15) printf("\n");
+          }
           perror("[ERROR] sendto pass_sock failed");
           usleep(100000);
         } else {
-          recv_len = recvfrom(pass_sock, buffer, UDP_DATAGRAM_MAX, 0, NULL, NULL);
-          if (recv_len < 0) {
+          pass_recv_len = recvfrom(pass_sock, buffer, UDP_DATAGRAM_MAX, 0, NULL, NULL);
+          if (pass_recv_len < 0) {
+            printf("[DEBUG] recv buffer hex dump (len = %ld):\n", pass_recv_len);
+            for (int i = 0; i < pass_recv_len; ++i) {
+              printf("%02x ", (unsigned char)buffer[i]);
+              if (i % 16 == 15) printf("\n");
+            }
             perror("[ERROR] recvfrom pass_sock failed");
             usleep(100000);
           } else {
@@ -347,33 +359,28 @@ static void *serve(void *args) {
           perror("[DEBUG] failed to relay request");
         }
       } else /* 成功获取响应 */ {
+        /* tmp: 打印响应内容进行查看 */
+
         /* 解析响应 */
         parse_dns_response(&response, buffer);
+        if (debug_level > 0) {
+          print_response(&response);
+        }
+
         /* 进行缓存 */
         cache_node_t *cache_node = cache_node_init(response.query.name, response.answer);
         pthread_mutex_lock(&mutex_dc);
         cache_insert(dns_cache, cache_node);
         pthread_mutex_unlock(&mutex_dc);
-        if (debug_level > 0) {
-          printf("[DEBUG] after insert\n");
-        }
         /* 构造响应 */
         /* 如果不做 id 转换，直接将响应的 buffer 回传即可 */
-        back_len = recv_len;
+        back_len = pass_recv_len;
+        free(response.query.name);
       }
     }
   }
   /* 回传响应 */
   /* 先不考虑超出 512 字节的情况 */
-  if (debug_level > 0) {
-    for (int i = 0; i < back_len; ++i) {
-      printf("%2x ", buffer[i]);
-      if (i > 0 && i % 8 == 0) {
-        printf("\n");
-      }
-    }
-    printf("\n");
-  }
   pthread_mutex_lock(&mutex_relay_sock);
   send_len = sendto(relay_sock, buffer, back_len, 0, (struct sockaddr *)client_addr, sizeof(*client_addr));
   pthread_mutex_unlock(&mutex_relay_sock);
@@ -385,6 +392,7 @@ static void *serve(void *args) {
     printf("[Debug] send to relay_sock successfully\n");
   }
 
+  free(request.query.name);
 cleanup:
   if (pass_sock > 0) {
     close(pass_sock);

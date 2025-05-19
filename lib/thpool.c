@@ -1,5 +1,6 @@
 #include "thpool.h"
 
+#include <assert.h>
 #include <pthread.h>
 #include <stdlib.h>
 
@@ -36,26 +37,24 @@ threadpool thpool_init(uint32_t num) {
   if (num == 0 || num > MAX_THREAD) num = MAX_THREAD;
 
   thpool_t *thpool = (thpool_t *)malloc(sizeof(thpool_t));
-  if (!thpool) return NULL;
+  assert(thpool != NULL);
 
   thpool->threads = (pthread_t *)malloc(sizeof(pthread_t) * num);
   thpool->num_threads_working = 0;
   thpool->num_threads_total = num;
+  thpool->job_queue.head = NULL;
+  thpool->job_queue.tail = NULL;
+  thpool->job_queue.len = 0;
+  thpool->is_alive = 1;
 
   pthread_mutex_init(&thpool->mutex, NULL);
   pthread_cond_init(&thpool->cond, NULL);
   pthread_cond_init(&thpool->wait_cond, NULL);
 
-  thpool->job_queue.head = NULL;
-  thpool->job_queue.tail = NULL;
-  thpool->job_queue.len = 0;
-
   for (uint32_t i = 0; i < num; ++i) {
     pthread_create(&thpool->threads[i], NULL, thread_worker, thpool);
     pthread_detach(thpool->threads[i]);
   }
-
-  thpool->is_alive = 1;
 
   return thpool;
 }

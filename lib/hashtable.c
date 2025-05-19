@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cache.h"
+
 static uint32_t fnv_hash_1a_32(void *key, uint32_t len) {
   uint8_t *p = key;
   uint32_t h = 0x811c9dc5;
@@ -104,11 +106,11 @@ void ht_insert(hash_table_t *table, void *key, void *value) {
   uint32_t index = table->hash(key, table->key_size, table->capacity);
   ht_node_t *new_node = NULL;
   if (table->nodes[index] != NULL) {
-    /* 处理哈希碰撞 */
+    /* 处理哈希碰撞 TODO: 没从链表删除对应节点，也许可以默许现在的情况，等待LRU删除对应的节点 */
     for (ht_node_t *node = table->nodes[index]; node != NULL; node = node->next) {
       if (!table->comp(node->key, key, table->key_size)) {
-        free(node->key);
-        free(node->value);
+        // free(node->key);
+        // free(node->value);
         node->key = key;
         node->value = value;
         return;
@@ -166,7 +168,7 @@ void ht_delete(hash_table_t *table, void *key) {
   --table->size;
 }
 
-int ht_free(hash_table_t *table) {
+void ht_free(hash_table_t *table) {
   for (int i = 0; i < table->capacity; ++i) {
     if (table->nodes[i] != NULL) {
       for (ht_node_t *node = table->nodes[i]; node != NULL;) {
@@ -178,5 +180,19 @@ int ht_free(hash_table_t *table) {
   }
   free(table->nodes);
   free(table);
-  return 0;
+}
+
+void ht_free_custom(hash_table_t *table, void (*clear)(ht_node_t *)) {
+  for (int i = 0; i < table->capacity; ++i) {
+    if (table->nodes[i] != NULL) {
+      for (ht_node_t *node = table->nodes[i]; node != NULL;) {
+        clear(node);
+        ht_node_t *next = node->next;
+        free(node);
+        node = next;
+      }
+    }
+  }
+  free(table->nodes);
+  free(table);
 }

@@ -104,9 +104,8 @@ void ht_delete(hash_table_t *table, void *key);
  *
  * @param table
  *
- * @return 0 on success
  */
-int ht_free(hash_table_t *table);
+void ht_free(hash_table_t *table);
 
 /**
  * @brief 传入具体节点回收函数

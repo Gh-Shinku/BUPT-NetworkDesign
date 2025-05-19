@@ -8,7 +8,7 @@
 #include "hashtable.h"
 #include "stdbool.h"
 
-#define CACHE_SIZE 1024
+#define CACHE_SIZE 512
 
 typedef struct LocalRecord {
   char *domain;
