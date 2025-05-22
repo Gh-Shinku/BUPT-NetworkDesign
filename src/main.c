@@ -13,11 +13,12 @@
 #include "cache.h"
 #include "dns.h"
 #include "hashtable.h"
+#include "log.h"
 #include "thpool.h"
 
 #define THREAD_NUM 32
 
-// TODO: 域名大小写不敏感
+// TODO: 写一个更好的 log，把文件和行数也显示出来，方便定位
 
 /* 0 = no debug, 1 = basic, 2 = verbose */
 static int debug_level = 0;
@@ -136,16 +137,16 @@ static int init_socket() {
 }
 
 static void handle_requests() {
-  uint8_t buffer[UDP_DATAGRAM_MAX];
+  uint8_t buffer[BUFFER_SIZE];
   struct TaskArgs *args;
   struct sockaddr_in client_addr;
   socklen_t client_addr_len;
 
   while (1) {
-    memset(buffer, 0, UDP_DATAGRAM_MAX * sizeof(uint8_t));
+    memset(buffer, 0, BUFFER_SIZE * sizeof(uint8_t));
     client_addr_len = sizeof(client_addr);
 
-    ssize_t recv_len = recvfrom(relay_sock, buffer, UDP_DATAGRAM_MAX, 0, (struct sockaddr *)&client_addr, &client_addr_len);
+    ssize_t recv_len = recvfrom(relay_sock, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&client_addr, &client_addr_len);
 
     if (recv_len < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -156,8 +157,8 @@ static void handle_requests() {
     }
 
     args = (struct TaskArgs *)malloc(sizeof(struct TaskArgs));
-    args->buffer = (uint8_t *)malloc(UDP_DATAGRAM_MAX);
-    memcpy(args->buffer, buffer, UDP_DATAGRAM_MAX);
+    args->buffer = (uint8_t *)malloc(BUFFER_SIZE);
+    memcpy(args->buffer, buffer, BUFFER_SIZE);
     args->sockaddr = client_addr;
     args->recv_len = recv_len;
 
@@ -200,7 +201,7 @@ static void read_record() {
     fscanf(table_relay, "%s", buf_domain);
     /* 不论该 key 是否重复，都进行插入 */
     local_record_t *record = local_record_init(buf_domain, buf_ip);
-    ht_insert(local_dns_table, buf_domain, record);
+    ht_insert(local_dns_table, record->domain, record);
   }
   fclose(table_relay);
 
@@ -277,7 +278,7 @@ static void *serve(void *args) {
       /* 因为被封禁，所以根本不提供 answer 部分 */
       back_len = relay_recv_len;
     } else {
-      init_flags(&flags, QR_RESPONSE, header.flags.OPcode, 0, 0, header.flags.TC, 1, 0, 0);
+      init_flags(&flags, QR_RESPONSE, header.flags.OPcode, 1, 0, header.flags.TC, 1, 0, 0);
       init_header(&header, header.id, flags, header.QDCOUNT, 1, 0, 0);
 
       put_header(&header, buffer);
@@ -287,13 +288,13 @@ static void *serve(void *args) {
       answer->ttl = DEFAULT_TTL;
       answer->rdlength = 4;
       inet_pton(AF_INET, ip, &answer->rdata.a_record.ipv4_address);
-      *(uint16_t *)answer->name = MSG_HEADER_SIZE | DOMAIN_PTR_MASK; /* 0xc00c */
+      answer->name = record->domain;
       /* 在 local_dns_table 中的记录不需要 Authority & Additional */
       /* put answer */
       if (debug_level > 0) {
         printf("[DEBUG] recv_len: %ld\n", relay_recv_len);
       }
-      back_len = relay_recv_len + put_answer(answer, buffer + relay_recv_len);
+      back_len = relay_recv_len + put_answer(answer, buffer, relay_recv_len);
       RR_delete(answer);
     }
   } else /* 再从 dns_cache 中查找 */ {
@@ -304,15 +305,15 @@ static void *serve(void *args) {
     if (cache_node != NULL) {
       array_t *RRs = cache_node->RRs;
       /* 还需要判断是否超出 UDP 报文大小，这个放在最后发送的位置进行判断 */
-      init_flags(&flags, QR_RESPONSE, request.header.flags.OPcode, 0, 0, request.header.flags.TC, 1, 0, 5);
+      init_flags(&flags, QR_RESPONSE, request.header.flags.OPcode, 1, 0, request.header.flags.TC, 1, 0, 0);
       init_header(&header, request.header.id, flags, request.header.QDCOUNT, RRs->length, 0, 0);
       put_header(&header, buffer);
       int offset = 0;
       for (int i = 0; i < RRs->length; i++) {
         /* 这里的 RR 是 parse_dns_response 时插入的，理论上已经过正确的设置 */
         DnsMessageAnswer *ans = &array_index(RRs, i, DnsMessageAnswer);
-        print_answer(ans);
-        offset += put_answer(ans, buffer + relay_recv_len + offset);
+        /* relay_recv_len = header + query */
+        offset += put_answer(ans, buffer, relay_recv_len + offset);
       }
       back_len = relay_recv_len + offset;
     } else /* 向外部 DNS 服务器发送请求 */ {
@@ -335,7 +336,7 @@ static void *serve(void *args) {
           perror("[ERROR] sendto pass_sock failed");
           usleep(100000);
         } else {
-          pass_recv_len = recvfrom(pass_sock, buffer, UDP_DATAGRAM_MAX, 0, NULL, NULL);
+          pass_recv_len = recvfrom(pass_sock, buffer, BUFFER_SIZE, 0, NULL, NULL);
           if (pass_recv_len < 0) {
             printf("[DEBUG] recv buffer hex dump (len = %ld):\n", pass_recv_len);
             for (int i = 0; i < pass_recv_len; ++i) {
@@ -359,13 +360,8 @@ static void *serve(void *args) {
           perror("[DEBUG] failed to relay request");
         }
       } else /* 成功获取响应 */ {
-        /* tmp: 打印响应内容进行查看 */
-
         /* 解析响应 */
         parse_dns_response(&response, buffer);
-        if (debug_level > 0) {
-          print_response(&response);
-        }
 
         /* 进行缓存 */
         cache_node_t *cache_node = cache_node_init(response.query.name, response.answer);

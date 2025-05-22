@@ -2,13 +2,14 @@
 #define HEADER_DNS_H
 
 #include <arpa/inet.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "array.h"
 
 #define BUFFER_SIZE 1024
 #define UDP_DATAGRAM_MAX 512
-#define NAME_MAX_SIZE 256
+#define NAME_MAX_SIZE 260
 #define MSG_HEADER_SIZE 12
 #define EX_DNS_ADDR "8.8.8.8"
 #define LOOP_BACK_ADDR "127.0.0.1"
@@ -17,12 +18,13 @@
 #define FLAGS_BAN 5
 #define DOMAIN_PTR_MASK 0xC000
 #define MAX_RETRY 3
+#define DOMAIN_PTR 2
 
 enum QR_TYPE { QR_QUERY, QR_RESPONSE };
 
 enum PORT { DNS_PORT = 53, RELAY_PORT = 4090 };
 
-enum { DNS_TYPE_A = 1, DNS_TYPE_AAAA = 28, DNS_TYPE_CNAME = 5 };
+enum { DNS_TYPE_A = 1, DNS_TYPE_AAAA = 28, DNS_TYPE_CNAME = 5, DNS_TYPE_OPT = 41 };
 
 typedef struct {
   uint32_t ipv4_address;
@@ -44,7 +46,7 @@ typedef union {
 
 /* name 需要进行内存分配，故提供了 RR_init */
 typedef struct DnsResourceRecord {
-  uint8_t *name;
+  char *name;
   uint16_t type;
   uint16_t class;
   uint32_t ttl;
@@ -101,7 +103,7 @@ typedef struct DnsResponse {
  * @param buf
  *
  */
-void construct_dns_name(const char *domain, uint8_t *buf);
+int construct_dns_name(const char *domain, uint8_t *buf);
 
 /**
  * @brief 解析 DNS 域名格式，包括对指针的处理
@@ -112,7 +114,7 @@ void construct_dns_name(const char *domain, uint8_t *buf);
  *
  * @return int 该 domain 在 buf 中占的长度
  */
-int parse_dns_name(char **domain, const uint8_t *buf, int offset);
+int parse_dns_name(char *domain, const uint8_t *buf, int offset);
 
 /**
  * @brief 解析 DNS Message->Header->uflags
@@ -184,7 +186,17 @@ void RR_delete(DnsResourceRecord *RR);
 /* put */
 void put_header(DnsMessageHeader *header, uint8_t *buffer);
 int put_request(DnsRequest *request, uint8_t *buffer);
-int put_answer(DnsMessageAnswer *answer, uint8_t *buffer);
+
+/**
+ * @brief 将 answer 装载到 buffer 中
+ *
+ * @param answer
+ * @param buffer 完整的 buffer
+ * @param offset answer 应当开始填充的初始位置偏移量
+ *
+ * @return int
+ */
+int put_answer(DnsMessageAnswer *answer, uint8_t *buffer, int ofanswer_offsetfset);
 void put_answers(array_t *answers, uint8_t *buffer);
 
 /* log */
@@ -196,6 +208,16 @@ void print_response(DnsResponse *response);
 
 /* Utils */
 uint16_t generate_random_id();
+
+/**
+ * @brief 大小写不敏感字符串比较
+ *
+ * @param a
+ * @param b
+ *
+ * @return bool
+ */
+bool case_insentive_strcmp(const char *a, const char *b);
 
 /**
  * @brief 按大端法将 32bit 的值写入 b 缓冲区中
