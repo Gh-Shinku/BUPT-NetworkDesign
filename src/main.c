@@ -331,7 +331,7 @@ static void *serve(void *args) {
           ++cnt;
           send_len = sendto(pass_sock, buffer, relay_recv_len, 0, (struct sockaddr *)&pass_addr, sizeof(pass_addr));
           if (debug_level >= 2) {
-            printf("SEND to %s (%lu bytes) [ID %4x->%4x]\n", request.query.name, relay_recv_len, request.header.id, ex_id);
+            printf("SEND to %s (%lu bytes) [ID %04x->%04x]\n", dns_server_ip, relay_recv_len, request.header.id, ex_id);
           }
           if (send_len < 0) {
             perror("[ERROR] sendto pass_sock failed");
@@ -347,8 +347,20 @@ static void *serve(void *args) {
               usleep(100000);
             } else {
               success = true;
+              if (debug_level >= 2) {
+                printf("RECV from %s (%lu bytes) ", dns_server_ip, pass_recv_len);
+                for (int i = 0; i < pass_recv_len; ++i) {
+                  if (i < pass_recv_len - 1) {
+                    printf("%02x ", buffer[i]);
+                  } else {
+                    printf("%02x\n", buffer[i]);
+                  }
+                }
+              }
               /* id 回转 */
+              parse_dns_header(&header, buffer);
               header.id = request.header.id;
+              header.flags.AA = 1;
               put_header(&header, buffer);
             }
           }
@@ -362,6 +374,18 @@ static void *serve(void *args) {
         } else /* 成功获取响应 */ {
           /* 解析响应 */
           parse_dns_response(&response, buffer);
+          if (response.header.ANCOUNT == 0) {
+            canCache = false;
+          } else {
+            canCache = false;
+            for (int i = 0; i < response.answer->length; ++i) {
+              DnsMessageAnswer *ans = &array_index(response.answer, i, DnsMessageAnswer);
+              if (ans->type == DNS_TYPE_A || ans->type == DNS_TYPE_AAAA) {
+                canCache = true;
+                break;
+              }
+            }
+          }
 
           /* 进行缓存 */
           if (canCache) {
