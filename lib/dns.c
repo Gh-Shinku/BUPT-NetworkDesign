@@ -159,7 +159,7 @@ void parse_dns_response(DnsResponse *response, const uint8_t *buffer) {
     } else if (answer->type == DNS_TYPE_AAAA) {
       memcpy(&answer->rdata.aaaa_record.ipv6_address, buffer + offset, data_len);
     } else if (answer->type == DNS_TYPE_CNAME) {
-      answer->rdata.cname_record.cname = malloc(NAME_MAX_SIZE);
+      answer->rdata.cname_record.cname = (char *)malloc(NAME_MAX_SIZE);
       assert(answer->rdata.cname_record.cname);
       parse_dns_name(answer->rdata.cname_record.cname, buffer, offset);
     }
@@ -341,24 +341,24 @@ void put_answers(array_t *answers, uint8_t *buffer) {
 
 void print_flags(DnsMessageHeaderFlags *flags) {
   printf(
-      "QR: %d\n"
-      "OPcode: %d\n"
-      "AA: %d\n"
-      "TC: %d\n"
-      "RD: %d\n"
-      "RA: %d\n"
-      "Z: %d\n"
+      "QR: %d, "
+      "OPcode: %d, "
+      "AA: %d, "
+      "TC: %d, "
+      "RD: %d, "
+      "RA: %d, "
+      "Z: %d, "
       "RCODE: %d\n",
       flags->QR, flags->OPcode, flags->AA, flags->TC, flags->RD, flags->RA, flags->Z, flags->RCODE);
 }
 
 void print_header(DnsMessageHeader *header) {
-  printf("ID: %x\n", header->id);
+  printf("ID: %04x, ", header->id);
   print_flags(&header->flags);
   printf(
-      "QDCOUNT: %d\n"
-      "ANCOUNT: %d\n"
-      "NSCOUNT: %d\n"
+      "QDCOUNT: %d, "
+      "ANCOUNT: %d, "
+      "NSCOUNT: %d, "
       "ARCOUNT: %d\n",
       header->QDCOUNT, header->ANCOUNT, header->NSCOUNT, header->ARCOUNT);
 }

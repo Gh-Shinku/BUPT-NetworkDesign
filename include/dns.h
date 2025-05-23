@@ -8,10 +8,10 @@
 #include "array.h"
 
 #define BUFFER_SIZE 1024
-#define UDP_DATAGRAM_MAX 512
-#define NAME_MAX_SIZE 260
+#define UDP_DATAGRAM_MAX 1024
+#define NAME_MAX_SIZE 512
 #define MSG_HEADER_SIZE 12
-#define EX_DNS_ADDR "8.8.8.8"
+#define EX_DNS_ADDR "114.114.114.114"
 #define LOOP_BACK_ADDR "127.0.0.1"
 #define BLACK_IP "0.0.0.0"
 #define DEFAULT_TTL 300

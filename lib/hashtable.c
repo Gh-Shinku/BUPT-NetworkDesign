@@ -30,6 +30,7 @@ static uint32_t ht_hash(void *key, uint32_t key_size, uint32_t capacity) {
 }
 
 int ht_str_comp(void *s1, void *s2, uint32_t key_size) {
+  assert(s1 && s2);
   return strcmp((const char *)s1, (const char *)s2);
 }
 
@@ -142,6 +143,8 @@ ht_node_t *ht_lookup(hash_table_t *table, void *key) {
   assert(table != NULL && key != NULL);
   uint32_t index = table->hash(key, table->key_size, table->capacity);
   for (ht_node_t *node = table->nodes[index]; node != NULL; node = node->next) {
+    assert(key);
+    assert(node->key);
     if (!table->comp(node->key, key, table->key_size)) {
       return node;
     }
