@@ -109,7 +109,7 @@ static int init_socket() {
 
   relay_addr.sin_family = AF_INET;
   relay_addr.sin_addr.s_addr = INADDR_ANY;
-  relay_addr.sin_port = htons(RELAY_PORT);
+  relay_addr.sin_port = htons(DNS_PORT);
 
   if (bind(relay_sock, (const struct sockaddr *)&relay_addr, sizeof(relay_addr)) < 0) {
     perror("[Error] relay_sock bind failed");
@@ -341,7 +341,7 @@ static void *serve(void *args) {
             pass_recv_len = recvfrom(pass_sock, buffer, BUFFER_SIZE, 0, NULL, NULL);
             if (pass_recv_len < 0) {
               if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                perror("[INFO] No data available at the moment");
+                // perror("[INFO] No data available at the moment");
               } else {
                 perror("[ERROR] recvfrom pass_sock failed");
               }
@@ -390,18 +390,20 @@ static void *serve(void *args) {
 
           /* 进行缓存 */
           if (canCache) {
+            /* 如果 cache 过，response.answer 的生命周期由 cache_node 进行管理 */
             cache_node_t *cache_node = cache_node_init(response.query.name, response.answer);
             pthread_mutex_lock(&mutex_dc);
             cache_insert(dns_cache, cache_node);
             pthread_mutex_unlock(&mutex_dc);
+          } else {
+            for (int i = 0; i < response.answer->length; ++i) {
+              RR_delete(&array_index(response.answer, i, DnsMessageAnswer));
+            }
+            array_free(response.answer);
           }
           /* 构造响应 */
           back_len = pass_recv_len;
           free(response.query.name);
-          for (int i = 0; i < response.answer->length; ++i) {
-            RR_delete(&array_index(response.answer, i, DnsMessageAnswer));
-          }
-          array_free(response.answer);
         }
       }
       }
