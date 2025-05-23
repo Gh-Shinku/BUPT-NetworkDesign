@@ -225,7 +225,6 @@ void RR_delete(DnsResourceRecord *RR) {
   if (RR->type == DNS_TYPE_CNAME && RR->rdata.cname_record.cname) {
     free(RR->rdata.cname_record.cname);
   }
-  free(RR);
 }
 
 static void put_flags(DnsMessageHeaderFlags *flags, uint8_t *buffer) {

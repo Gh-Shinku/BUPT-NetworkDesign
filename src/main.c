@@ -14,7 +14,6 @@
 #include "cache.h"
 #include "dns.h"
 #include "hashtable.h"
-#include "log.h"
 #include "thpool.h"
 
 #define THREAD_NUM 32
@@ -35,12 +34,13 @@ static pthread_mutex_t mutex_relay_sock;  /* mutex of relay_sock */
 static pthread_mutex_t mutex_request_num; /* mutex of request_num */
 static threadpool thpool;
 
-static void read_record();
-static void *serve(void *args);
 static int init_data_structures();
 static int init_socket();
+static void read_record();
+static void *serve(void *args);
 static void handle_requests();
-static void cleanup_resources();
+static void record_clear(ht_node_t *node);
+static void clear_resources();
 static void print_usage();
 static void parse_args(int argc, char *argv[]);
 static void print_basic_info();
@@ -62,17 +62,17 @@ int main(int argc, char *argv[]) {
   }
 
   if (init_socket() != 0) {
-    cleanup_resources();
+    clear_resources();
     return 1;
   }
 
   handle_requests();
-  cleanup_resources();
+  clear_resources();
   return 0;
 }
 
 static int init_data_structures() {
-  local_dns_table = ht_init(NULL, ht_str_comp, 1024, STRING);
+  local_dns_table = ht_init(NULL, ht_str_comp, record_clear, 1024, STRING);
   dns_cache = lru_cache_init();
 
   if (pthread_mutex_init(&mutex_ldt, NULL) < 0) {
@@ -120,6 +120,29 @@ static int init_socket() {
   return 0;
 }
 
+static void read_record() {
+  FILE *table_relay = fopen(config_file, "r");
+  if (table_relay == NULL) {
+    perror("Failed to open DNS relay configuration file");
+    fprintf(stderr, "Tried to open: %s\n", config_file);
+    return;
+  }
+
+  int record_num = 0;
+  char buf_ip[NAME_MAX_SIZE], buf_domain[NAME_MAX_SIZE];
+  while (fscanf(table_relay, "%s", buf_ip) != EOF) {
+    fscanf(table_relay, "%s", buf_domain);
+    if (debug_level == 2) {
+      printf("%d %s %s\n", record_num++, buf_domain, buf_ip);
+    }
+    /* 不论该 key 是否重复，都进行插入 */
+    local_record_t *record = local_record_init(buf_domain, buf_ip);
+    /* key 和 value 的内存管理由 record 维护 */
+    ht_insert(local_dns_table, record->domain, record);
+  }
+  fclose(table_relay);
+}
+
 static void handle_requests() {
   uint8_t buffer[BUFFER_SIZE];
   struct TaskArgs *args;
@@ -150,15 +173,15 @@ static void handle_requests() {
   }
 }
 
-static void cleanup_record(ht_node_t *node) {
+static void record_clear(ht_node_t *node) {
   local_record_t *record = (local_record_t *)node->value;
+  if (record == NULL) return;
   free(record->domain);
   free(record->ip);
   free(record);
-  free(node->key);
 }
 
-static void cleanup_resources() {
+static void clear_resources() {
   close(relay_sock);
 
   pthread_mutex_destroy(&mutex_ldt);
@@ -168,30 +191,8 @@ static void cleanup_resources() {
   thpool_wait(thpool);
   thpool_destroy(thpool);
 
-  ht_free_custom(local_dns_table, cleanup_record);
+  ht_free(local_dns_table);
   cache_free(dns_cache);
-}
-
-static void read_record() {
-  FILE *table_relay = fopen(config_file, "r");
-  if (table_relay == NULL) {
-    perror("Failed to open DNS relay configuration file");
-    fprintf(stderr, "Tried to open: %s\n", config_file);
-    return;
-  }
-
-  int record_num = 0;
-  char buf_ip[NAME_MAX_SIZE], buf_domain[NAME_MAX_SIZE];
-  while (fscanf(table_relay, "%s", buf_ip) != EOF) {
-    fscanf(table_relay, "%s", buf_domain);
-    if (debug_level == 2) {
-      printf("%d %s %s\n", record_num++, buf_domain, buf_ip);
-    }
-    /* 不论该 key 是否重复，都进行插入 */
-    local_record_t *record = local_record_init(buf_domain, buf_ip);
-    ht_insert(local_dns_table, record->domain, record);
-  }
-  fclose(table_relay);
 }
 
 static void *serve(void *args) {
@@ -397,6 +398,10 @@ static void *serve(void *args) {
           /* 构造响应 */
           back_len = pass_recv_len;
           free(response.query.name);
+          for (int i = 0; i < response.answer->length; ++i) {
+            RR_delete(&array_index(response.answer, i, DnsMessageAnswer));
+          }
+          array_free(response.answer);
         }
       }
       }

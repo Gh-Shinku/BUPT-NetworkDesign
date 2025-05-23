@@ -17,12 +17,15 @@ typedef struct HTNode {
   void *value;
 } ht_node_t;
 
+typedef void (*ht_clear_func)(ht_node_t *);
+
 typedef struct HashTable {
   ht_node_t **nodes;    /* 表 */
   ht_hash_func hash;    /* 哈希函数 */
   ht_compare_func comp; /* 比较函数 */
-  uint32_t capacity;    /* 容量 */
-  uint32_t size;        /* 实际数目 */
+  ht_clear_func clear;
+  uint32_t capacity; /* 容量 */
+  uint32_t size;     /* 实际数目 */
   uint32_t key_size;
 } hash_table_t;
 
@@ -55,7 +58,7 @@ ht_node_t *ht_node_init(void *key, void *value);
  *
  * @return hash_table_t*
  */
-hash_table_t *ht_init(ht_hash_func hash, ht_compare_func comp, uint32_t capacity, uint32_t key_size);
+hash_table_t *ht_init(ht_hash_func hash, ht_compare_func comp, ht_clear_func clear, uint32_t capacity, uint32_t key_size);
 
 /**
  * @brief 向 Hash 表插入 k-v 对
@@ -100,21 +103,12 @@ ht_node_t *ht_lookup(hash_table_t *table, void *key);
 void ht_delete(hash_table_t *table, void *key);
 
 /**
- * @brief 释放 hash 表，node 中 key 和 value 的生命周期由 hash 表的使用者负责
+ * @brief 释放 hash 表，调用 clear 进行具体节点内存回收
  *
  * @param table
  *
  */
 void ht_free(hash_table_t *table);
-
-/**
- * @brief 传入具体节点回收函数
- *
- * @param table
- * @param clear
- *
- */
-void ht_free_custom(hash_table_t *table, void (*clear)(ht_node_t *));
 
 /**
  * @brief Resize the hash table to a new capacity

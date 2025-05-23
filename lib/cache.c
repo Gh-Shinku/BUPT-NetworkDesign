@@ -7,6 +7,8 @@
 
 #include "dns.h"
 
+static void cache_node_clear(ht_node_t *node);
+
 local_record_t *local_record_init(char *domain, char *ip) {
   assert(domain && ip);
   local_record_t *record = (local_record_t *)malloc(sizeof(local_record_t));
@@ -42,7 +44,7 @@ lru_cache_t *lru_cache_init() {
 
   list->head = NULL;
   list->tail = NULL;
-  list->hashtable = ht_init(NULL, ht_str_comp, 1024, STRING);
+  list->hashtable = ht_init(NULL, ht_str_comp, cache_node_clear, 1024, STRING);
   list->size = 0;
   return list;
 }
@@ -182,4 +184,9 @@ void cache_free(lru_cache_t *list) {
   ht_free(list->hashtable);
 
   free(list);
+}
+
+/* 什么都不需要做，cache_node 由 cache_table 自身进行管理 */
+static void cache_node_clear(ht_node_t *node) {
+  return;
 }

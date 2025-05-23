@@ -53,7 +53,6 @@ threadpool thpool_init(uint32_t num) {
 
   for (uint32_t i = 0; i < num; ++i) {
     pthread_create(&thpool->threads[i], NULL, thread_worker, thpool);
-    pthread_detach(thpool->threads[i]);
   }
 
   return thpool;
@@ -124,16 +123,17 @@ void thpool_destroy(threadpool pool) {
   pthread_cond_broadcast(&thpool->cond);  // 唤醒所有等待线程
   pthread_mutex_unlock(&thpool->mutex);
 
-  // 等待所有任务执行完
   thpool_wait(pool);
 
-  // 清理任务队列
+  for (uint32_t i = 0; i < thpool->num_threads_total; ++i) {
+    pthread_join(thpool->threads[i], NULL);
+  }
+
   job_t *job;
   while ((job = jobqueue_pop(&thpool->job_queue)) != NULL) {
     free(job);
   }
 
-  // 销毁线程池资源
   pthread_mutex_destroy(&thpool->mutex);
   pthread_cond_destroy(&thpool->cond);
   pthread_cond_destroy(&thpool->wait_cond);

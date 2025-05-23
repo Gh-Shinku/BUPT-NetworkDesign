@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "cache.h"
+#include "log.h"
 
 static uint32_t fnv_hash_1a_32(void *key, uint32_t len) {
   uint8_t *p = key;
@@ -38,7 +38,7 @@ static int ht_default_comp(void *s1, void *s2, uint32_t key_size) {
   return memcmp(s1, s2, key_size);
 }
 
-hash_table_t *ht_init(ht_hash_func hash, ht_compare_func comp, uint32_t capacity, uint32_t key_size) {
+hash_table_t *ht_init(ht_hash_func hash, ht_compare_func comp, ht_clear_func clear, uint32_t capacity, uint32_t key_size) {
   hash_table_t *table = (hash_table_t *)malloc(sizeof(hash_table_t));
   if (hash != NULL) {
     table->hash = hash;
@@ -50,6 +50,8 @@ hash_table_t *ht_init(ht_hash_func hash, ht_compare_func comp, uint32_t capacity
   } else {
     table->comp = ht_default_comp;
   }
+  assert(clear);
+  table->clear = clear;
   table->capacity = capacity;
   table->size = 0;
   table->key_size = key_size;
@@ -106,12 +108,12 @@ void ht_insert(hash_table_t *table, void *key, void *value) {
 
   uint32_t index = table->hash(key, table->key_size, table->capacity);
   ht_node_t *new_node = NULL;
-  if (table->nodes[index] != NULL) {
-    /* 处理哈希碰撞 TODO: 没从链表删除对应节点，也许可以默许现在的情况，等待LRU删除对应的节点 */
+  if (table->nodes[index] != NULL) /* 有碰撞 */ {
     for (ht_node_t *node = table->nodes[index]; node != NULL; node = node->next) {
-      if (!table->comp(node->key, key, table->key_size)) {
-        // free(node->key);
-        // free(node->value);
+      if (!table->comp(node->key, key, table->key_size)) /* 重复节点，更新 k-v pair */ {
+        // debug_log();
+        // printf("node->key: %s, key: %s\n", (char *)node->key, (char *)key);
+        table->clear(node);
         node->key = key;
         node->value = value;
         return;
@@ -120,9 +122,7 @@ void ht_insert(hash_table_t *table, void *key, void *value) {
     new_node = ht_node_init(key, value);
     new_node->next = table->nodes[index];
     table->nodes[index]->prev = new_node;
-    table->nodes[index] = new_node;
-  } else {
-    /* 无碰撞 */
+  } else /* 无碰撞 */ {
     new_node = ht_node_init(key, value);
   }
   table->nodes[index] = new_node;
@@ -154,7 +154,8 @@ ht_node_t *ht_lookup(hash_table_t *table, void *key) {
 
 void ht_delete(hash_table_t *table, void *key) {
   uint32_t index = table->hash(key, table->key_size, table->capacity);
-  for (ht_node_t *node = table->nodes[index]; node != NULL; node = node->next) {
+  for (ht_node_t *node = table->nodes[index]; node != NULL;) {
+    ht_node_t *next = node->next;
     if (!table->comp(node->key, key, table->key_size)) {
       if (node->next != NULL) {
         node->next->prev = node->prev;
@@ -165,10 +166,12 @@ void ht_delete(hash_table_t *table, void *key) {
       if (node->prev == NULL && node->next == NULL) {
         table->nodes[index] = NULL;
       }
+      table->clear(node);
       free(node);
     }
+    node = next;
+    --table->size;
   }
-  --table->size;
 }
 
 void ht_free(hash_table_t *table) {
@@ -176,21 +179,7 @@ void ht_free(hash_table_t *table) {
     if (table->nodes[i] != NULL) {
       for (ht_node_t *node = table->nodes[i]; node != NULL;) {
         ht_node_t *next = node->next;
-        free(node);
-        node = next;
-      }
-    }
-  }
-  free(table->nodes);
-  free(table);
-}
-
-void ht_free_custom(hash_table_t *table, void (*clear)(ht_node_t *)) {
-  for (int i = 0; i < table->capacity; ++i) {
-    if (table->nodes[i] != NULL) {
-      for (ht_node_t *node = table->nodes[i]; node != NULL;) {
-        clear(node);
-        ht_node_t *next = node->next;
+        table->clear(node);
         free(node);
         node = next;
       }
