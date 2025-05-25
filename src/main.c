@@ -415,9 +415,7 @@ static void *serve(void *args) {
     }
   }
   /* 回传响应 */
-  pthread_mutex_lock(&mutex_relay_sock);
   send_len = sendto(relay_sock, buffer, back_len, 0, (struct sockaddr *)client_addr, sizeof(*client_addr));
-  pthread_mutex_unlock(&mutex_relay_sock);
   if (send_len < 0) {
     perror("[ERROR] sendto relay_sock failed!");
   }
