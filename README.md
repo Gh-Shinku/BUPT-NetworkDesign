@@ -4,6 +4,15 @@
 
 > [RFC 1035](https://datatracker.ietf.org/doc/html/rfc1035)
 
+## 构建
+```
+git clone git@github.com:Gh-Shinku/BUPT-NetworkDesign.git
+mkdir build && cd build
+cmake ..
+make
+```
+需要注意的是，当前在`main.c`中，并未将监听端口设置为 53，实际测试时需要进行修改。
+
 ## response 需要修改 request 的部分：
 > DNS response 的报文格式，相较于 request 仅仅添加了 Answers 段
 ### Header
