@@ -10,6 +10,29 @@
 
 #include "log.h"
 
+int construct_dns_name(const char *domain, uint8_t *buf) {
+  int cnt = 0;
+  const char *p = domain;
+  while (*p) {
+    const char *base = p;
+    uint8_t len = 0;
+    while (*p && *p != '.') {
+      ++len;
+      ++p;
+    }
+
+    *buf++ = len;
+    memcpy(buf, base, len);
+    buf += len;
+    if (*p == '.') {
+      ++p;
+    }
+    cnt += len + 1;
+  }
+  *buf = 0;
+  return cnt + 1;
+}
+
 int construct_dns_name_with_compression(const char *domain, uint8_t *buf,
                                         int buf_base_offset,  // buffer 的起始偏移（用于计算绝对位置）
                                         DnsNameOffsetEntry *entries,
@@ -333,8 +356,8 @@ int put_request(DnsRequest *request, uint8_t *buffer) {
   return offset;
 }
 
-int new_put_answer(DnsMessageAnswer *answer, uint8_t *buffer, int answer_offset, DnsNameOffsetEntry *compression_table,
-                   int *compression_count) {
+int put_answer(DnsMessageAnswer *answer, uint8_t *buffer, int answer_offset, DnsNameOffsetEntry *compression_table,
+               int *compression_count) {
   assert(answer != NULL && buffer != NULL);
 
   int offset = 0;

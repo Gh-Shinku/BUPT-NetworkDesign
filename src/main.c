@@ -258,7 +258,7 @@ static void *serve(void *args) {
   /* 先判断请求类型 */
   bool canCache = true;
   /* 非缓存类型直接进行中继转发 */
-  if (request.query.type != DNS_TYPE_A && request.query.type != DNS_TYPE_AAAA && request.query.type != DNS_TYPE_CNAME) {
+  if (request.query.type != DNS_TYPE_A) {
     canCache = false;
     goto RELAY_REQUEST;
   } else /* 是缓存类型再根据缓存判断 */ {
@@ -386,7 +386,7 @@ static void *serve(void *args) {
             canCache = false;
             for (int i = 0; i < response.answer->length; ++i) {
               DnsMessageAnswer *ans = &array_index(response.answer, i, DnsMessageAnswer);
-              if (ans->type == DNS_TYPE_A || ans->type == DNS_TYPE_AAAA) {
+              if (ans->type == DNS_TYPE_A) {
                 canCache = true;
                 break;
               }
