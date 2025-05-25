@@ -14,6 +14,7 @@
 #include "cache.h"
 #include "dns.h"
 #include "hashtable.h"
+#include "log.h"
 #include "thpool.h"
 
 #define THREAD_NUM 32
@@ -109,7 +110,7 @@ static int init_socket() {
 
   relay_addr.sin_family = AF_INET;
   relay_addr.sin_addr.s_addr = INADDR_ANY;
-  relay_addr.sin_port = htons(DNS_PORT);
+  relay_addr.sin_port = htons(RELAY_PORT);
 
   if (bind(relay_sock, (const struct sockaddr *)&relay_addr, sizeof(relay_addr)) < 0) {
     perror("[Error] relay_sock bind failed");
@@ -287,6 +288,8 @@ static void *serve(void *args) {
         init_header(&header, header.id, flags, header.QDCOUNT, 1, 0, 0);
 
         put_header(&header, buffer);
+        int compression_count = 0;
+        DnsNameOffsetEntry compression_table[MAX_ENTRY_COUNT];
         DnsMessageAnswer *answer = RR_init();
         answer->type = 1;
         answer->class = 1;
@@ -299,7 +302,7 @@ static void *serve(void *args) {
         if (debug_level > 0) {
           printf("[DEBUG] recv_len: %ld\n", relay_recv_len);
         }
-        back_len = relay_recv_len + put_answer(answer, buffer, relay_recv_len);
+        back_len = relay_recv_len + put_answer(answer, buffer, relay_recv_len, compression_table, &compression_count);
         RR_delete(answer);
       }
     } else /* 再从 dns_cache 中查找 */ {
@@ -313,9 +316,11 @@ static void *serve(void *args) {
         init_header(&header, request.header.id, flags, request.header.QDCOUNT, RRs->length, 0, 0);
         put_header(&header, buffer);
         int offset = 0;
+        int compression_count = 0;
+        DnsNameOffsetEntry compression_table[MAX_ENTRY_COUNT];
         for (int i = 0; i < RRs->length; i++) {
           DnsMessageAnswer *ans = &array_index(RRs, i, DnsMessageAnswer);
-          offset += put_answer(ans, buffer, relay_recv_len + offset);
+          offset += put_answer(ans, buffer, relay_recv_len + offset, compression_table, &compression_count);
         }
         back_len = relay_recv_len + offset;
       } else /* 向外部 DNS 服务器发送请求 */ {

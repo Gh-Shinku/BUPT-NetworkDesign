@@ -19,6 +19,7 @@
 #define DOMAIN_PTR_MASK 0xC000
 #define MAX_RETRY 3
 #define DOMAIN_PTR 2
+#define MAX_ENTRY_COUNT 32
 
 enum QR_TYPE { QR_QUERY, QR_RESPONSE };
 
@@ -43,6 +44,11 @@ typedef union {
   AAAA_RData aaaa_record;
   CNAME_RData cname_record;
 } RData;
+
+typedef struct {
+  const char *name;  // 域名字符串（后缀）
+  int offset;        // 在 buffer 中的偏移
+} DnsNameOffsetEntry;
 
 /* name 需要进行内存分配，故提供了 RR_init */
 typedef struct DnsResourceRecord {
@@ -196,8 +202,7 @@ int put_request(DnsRequest *request, uint8_t *buffer);
  *
  * @return int
  */
-int put_answer(DnsMessageAnswer *answer, uint8_t *buffer, int ofanswer_offsetfset);
-void put_answers(array_t *answers, uint8_t *buffer);
+int put_answer(DnsMessageAnswer *answer, uint8_t *buffer, int answer_offset, DnsNameOffsetEntry *compression_table, int *compression_count);
 
 /* log */
 void print_flags(DnsMessageHeaderFlags *flags);
