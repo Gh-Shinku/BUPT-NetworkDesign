@@ -110,7 +110,7 @@ static int init_socket() {
 
   relay_addr.sin_family = AF_INET;
   relay_addr.sin_addr.s_addr = INADDR_ANY;
-  relay_addr.sin_port = htons(RELAY_PORT);
+  relay_addr.sin_port = htons(DNS_PORT);
 
   if (bind(relay_sock, (const struct sockaddr *)&relay_addr, sizeof(relay_addr)) < 0) {
     perror("[Error] relay_sock bind failed");
@@ -255,63 +255,58 @@ static void *serve(void *args) {
     printf("    %s, TYPE %d, CLASS %d\n", request.query.name, request.query.type, request.query.class);
   }
 
-  /* 先判断请求类型 */
-  bool canCache = true;
-  /* 非缓存类型直接进行中继转发 */
-  if (request.query.type != DNS_TYPE_A) {
-    canCache = false;
-    goto RELAY_REQUEST;
-  } else /* 是缓存类型再根据缓存判断 */ {
-    /* 先从 local_dns_table 中查找 */
-    pthread_mutex_lock(&mutex_ldt);
-    ht_node_t *ht_node = ht_lookup(local_dns_table, request.query.name);
-    pthread_mutex_unlock(&mutex_ldt);
+  /* 先判断是否在 dnsrelay.txt 中 */
+  pthread_mutex_lock(&mutex_ldt);
+  ht_node_t *ht_node = ht_lookup(local_dns_table, request.query.name);
+  pthread_mutex_unlock(&mutex_ldt);
+  if (ht_node != NULL) {
+    local_record_t *record = (local_record_t *)ht_node->value;
+    assert(record != NULL);
+    /* 给定 header，header 不能先设置，还要判断 IP 是否被封禁 */
+    parse_dns_header(&header, buffer);
 
-    if (ht_node != NULL) {
-      local_record_t *record = (local_record_t *)ht_node->value;
-      assert(record != NULL);
-      /* 给定 header，header 不能先设置，还要判断 IP 是否被封禁 */
-      parse_dns_header(&header, buffer);
+    char *ip = record->ip;
 
-      char *ip = record->ip;
+    /* 判断 IP 是否被封禁 */
+    if (!strcmp(ip, BLACK_IP)) {
+      init_flags(&flags, QR_RESPONSE, header.flags.OPcode, 0, 0, header.flags.TC, 1, 0, 5);
+      init_header(&header, header.id, flags, header.QDCOUNT, 0, 0, 0);
 
-      /* 判断 IP 是否被封禁 */
-      if (!strcmp(ip, BLACK_IP)) {
-        init_flags(&flags, QR_RESPONSE, header.flags.OPcode, 0, 0, header.flags.TC, 1, 0, 5);
-        init_header(&header, header.id, flags, header.QDCOUNT, 0, 0, 0);
+      put_header(&header, buffer);
+      /* 因为被封禁，所以根本不提供 answer 部分 */
+      back_len = relay_recv_len;
+    } else {
+      init_flags(&flags, QR_RESPONSE, header.flags.OPcode, 1, 0, header.flags.TC, 1, 0, 0);
+      init_header(&header, header.id, flags, header.QDCOUNT, 1, 0, 0);
 
-        put_header(&header, buffer);
-        /* 因为被封禁，所以根本不提供 answer 部分 */
-        back_len = relay_recv_len;
-      } else {
-        init_flags(&flags, QR_RESPONSE, header.flags.OPcode, 1, 0, header.flags.TC, 1, 0, 0);
-        init_header(&header, header.id, flags, header.QDCOUNT, 1, 0, 0);
-
-        put_header(&header, buffer);
-        int compression_count = 0;
-        DnsNameOffsetEntry compression_table[MAX_ENTRY_COUNT];
-        DnsMessageAnswer *answer = RR_init();
-        answer->type = 1;
-        answer->class = 1;
-        answer->ttl = DEFAULT_TTL;
-        answer->rdlength = 4;
-        inet_pton(AF_INET, ip, &answer->rdata.a_record.ipv4_address);
-        strcpy(answer->name, record->domain);
-        /* 在 local_dns_table 中的记录不需要 Authority & Additional */
-        /* put answer */
-        if (debug_level > 0) {
-          printf("[DEBUG] recv_len: %ld\n", relay_recv_len);
-        }
-        back_len = relay_recv_len + put_answer(answer, buffer, relay_recv_len, compression_table, &compression_count);
-        RR_delete(answer);
+      put_header(&header, buffer);
+      int compression_count = 0;
+      DnsNameOffsetEntry compression_table[MAX_ENTRY_COUNT];
+      DnsMessageAnswer *answer = RR_init();
+      answer->type = 1;
+      answer->class = 1;
+      answer->ttl = DEFAULT_TTL;
+      answer->rdlength = 4;
+      inet_pton(AF_INET, ip, &answer->rdata.a_record.ipv4_address);
+      strcpy(answer->name, record->domain);
+      /* 在 local_dns_table 中的记录不需要 Authority & Additional */
+      /* put answer */
+      if (debug_level > 0) {
+        printf("[DEBUG] recv_len: %ld\n", relay_recv_len);
       }
-    } else /* 再从 dns_cache 中查找 */ {
+      back_len = relay_recv_len + put_answer(answer, buffer, relay_recv_len, compression_table, &compression_count);
+      RR_delete(answer);
+    }
+  } else {
+    /* 先判断请求类型 */
+    bool canCache = true;
+    /* 是缓存类型则从 dns_cache 中查找 */
+    if (request.query.type == DNS_TYPE_A) {
       pthread_mutex_lock(&mutex_dc);
       cache_node_t *cache_node = cache_lookup(dns_cache, request.query.name);
       pthread_mutex_unlock(&mutex_dc);
-      if (cache_node != NULL) {
+      if (cache_node != NULL) /* 命中 cache */ {
         array_t *RRs = cache_node->RRs;
-        /* 还需要判断是否超出 UDP 报文大小，这个放在最后发送的位置进行判断 */
         init_flags(&flags, QR_RESPONSE, request.header.flags.OPcode, 1, 0, request.header.flags.TC, 1, 0, 0);
         init_header(&header, request.header.id, flags, request.header.QDCOUNT, RRs->length, 0, 0);
         put_header(&header, buffer);
@@ -323,9 +318,10 @@ static void *serve(void *args) {
           offset += put_answer(ans, buffer, relay_recv_len + offset, compression_table, &compression_count);
         }
         back_len = relay_recv_len + offset;
-      } else /* 向外部 DNS 服务器发送请求 */ {
-      /* 由于 UDP 请求可能会失败，设置重传机制 */
+      } else /* 未命中 cache */ {
+        /* 向外部 DNS 服务器发送请求 */
       RELAY_REQUEST : {
+        /* 由于 UDP 请求可能会失败，设置重传机制 */
         int cnt = 0;
         bool success = false;
         /* id 转换 */
@@ -412,8 +408,12 @@ static void *serve(void *args) {
         }
       }
       }
+    } else /* 非缓存类型直接进行中继转发 */ {
+      canCache = false;
+      goto RELAY_REQUEST;
     }
   }
+
   /* 回传响应 */
   send_len = sendto(relay_sock, buffer, back_len, 0, (struct sockaddr *)client_addr, sizeof(*client_addr));
   if (send_len < 0) {
