@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "dns.h"
 #include "log.h"
 
 static uint32_t fnv_hash_1a_32(void *key, uint32_t len) {
@@ -31,7 +32,7 @@ static uint32_t ht_hash(void *key, uint32_t key_size, uint32_t capacity) {
 
 int ht_str_comp(void *s1, void *s2, uint32_t key_size) {
   assert(s1 && s2);
-  return strcmp((const char *)s1, (const char *)s2);
+  return case_insentive_strcmp((const char *)s1, (const char *)s2);
 }
 
 static int ht_default_comp(void *s1, void *s2, uint32_t key_size) {

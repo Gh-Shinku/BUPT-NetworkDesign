@@ -104,13 +104,12 @@ static void *thread_worker(void *arg) {
 
     pthread_mutex_lock(&thpool->mutex);
     --thpool->num_threads_working;
+    /* 唤醒调用 thpool_wait 的 caller 线程 */
     if (thpool->job_queue.len == 0 && thpool->num_threads_working == 0) {
       pthread_cond_broadcast(&thpool->wait_cond);
     }
     pthread_mutex_unlock(&thpool->mutex);
   }
-  return NULL;
-
   return NULL;
 }
 

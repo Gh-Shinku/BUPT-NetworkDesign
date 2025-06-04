@@ -189,7 +189,6 @@ static void clear_resources() {
   pthread_mutex_destroy(&mutex_dc);
   pthread_mutex_destroy(&mutex_relay_sock);
 
-  thpool_wait(thpool);
   thpool_destroy(thpool);
 
   ht_free(local_dns_table);
